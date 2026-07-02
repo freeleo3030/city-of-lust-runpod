@@ -16,16 +16,8 @@ WORKDIR /stable-diffusion-webui
 # A1111 의존성 설치
 RUN pip install -r requirements.txt
 
-# ChilloutMix 모델 다운로드
-RUN mkdir -p models/Stable-diffusion && \
-    wget -q -O models/Stable-diffusion/chilloutmix.safetensors \
-    "https://huggingface.co/TASUKU2023/Chilloutmix/resolve/main/chilloutmix_NiPrunedFp32Fix.safetensors"
-
 # ControlNet 설치
-RUN git clone https://github.com/Mikubill/sd-webui-controlnet extensions/sd-webui-controlnet && \
-    mkdir -p extensions/sd-webui-controlnet/models && \
-    wget -q -O extensions/sd-webui-controlnet/models/control_sd15_openpose.pth \
-    "https://huggingface.co/lllyasviel/ControlNet/resolve/main/models/control_sd15_openpose.pth"
+RUN git clone https://github.com/Mikubill/sd-webui-controlnet extensions/sd-webui-controlnet
 
 # ADetailer 설치
 RUN git clone https://github.com/Bing-su/adetailer extensions/adetailer
@@ -33,5 +25,7 @@ RUN git clone https://github.com/Bing-su/adetailer extensions/adetailer
 # RunPod 핸들러
 RUN pip install runpod requests
 COPY handler.py /handler.py
+COPY start.sh /start.sh
+RUN chmod +x /start.sh
 
-CMD ["python", "-u", "/handler.py"]
+CMD ["/start.sh"]
