@@ -11,7 +11,8 @@ def start_a1111():
     subprocess.Popen([
         "python", "/stable-diffusion-webui/webui.py",
         "--api", "--nowebui", "--skip-torch-cuda-test",
-        "--no-half-vae", "--xformers"
+        "--no-half-vae", "--xformers",
+        "--ckpt-dir", "/stable-diffusion-webui/models/Stable-diffusion",
     ])
     # A1111 시작 대기
     for _ in range(60):
