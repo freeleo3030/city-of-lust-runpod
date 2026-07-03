@@ -23,12 +23,5 @@ if [ ! -f "$CONTROLNET_PATH" ]; then
 fi
 ln -sf "$CONTROLNET_PATH" /stable-diffusion-webui/extensions/sd-webui-controlnet/models/control_sd15_openpose.pth
 
-# A1111 필요한 repo 초기화 (최초 1회)
-cd /stable-diffusion-webui
-if [ ! -d "repositories/stable-diffusion-stability-ai" ]; then
-    echo "Initializing A1111 repositories..."
-    python launch.py --skip-torch-cuda-test --exit
-fi
-
 echo "Starting handler..."
 python -u /handler.py

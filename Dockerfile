@@ -22,6 +22,9 @@ RUN git clone https://github.com/Mikubill/sd-webui-controlnet extensions/sd-webu
 # ADetailer 설치
 RUN git clone https://github.com/Bing-su/adetailer extensions/adetailer
 
+# A1111 repo 초기화 (빌드 시점에 미리 — 런타임에 GitHub 접근 불가)
+RUN python launch.py --skip-torch-cuda-test --exit || true
+
 # RunPod 핸들러
 RUN pip install runpod requests
 COPY handler.py /handler.py
