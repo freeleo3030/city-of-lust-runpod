@@ -8,9 +8,8 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # diffusers + 필요 패키지 (torch는 base image 것 유지)
-RUN pip install --no-cache-dir --no-deps \
-    diffusers==0.27.2 && \
-    pip install --no-cache-dir \
+RUN pip install --no-cache-dir \
+    diffusers \
     transformers \
     accelerate \
     safetensors \
