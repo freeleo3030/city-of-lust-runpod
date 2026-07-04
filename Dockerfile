@@ -7,18 +7,16 @@ RUN apt-get update && apt-get install -y \
     wget libgl1 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-# diffusers + 필요 패키지
-RUN pip install --no-cache-dir \
-    diffusers==0.27.2 \
+# diffusers + 필요 패키지 (torch는 base image 것 유지)
+RUN pip install --no-cache-dir --no-deps \
+    diffusers==0.27.2 && \
+    pip install --no-cache-dir \
     transformers \
     accelerate \
     safetensors \
     runpod \
     requests \
     Pillow
-
-# diffusers import 검증
-RUN python -c "import torch; import diffusers; print('imports ok, torch:', torch.__version__)"
 
 COPY handler.py /handler.py
 COPY start.sh /start.sh
