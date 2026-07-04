@@ -1,102 +1,107 @@
 import runpod
-import requests
 import base64
-import subprocess
-import time
+import torch
 import os
+from io import BytesIO
+from diffusers import StableDiffusionPipeline, StableDiffusionImg2ImgPipeline
+from PIL import Image
 
-A1111_URL = "http://127.0.0.1:7860"
+VOLUME_DIR = "/runpod-volume"
+MODEL_PATH = f"{VOLUME_DIR}/chilloutmix.safetensors"
 
-def start_a1111():
-    subprocess.Popen([
-        "python", "/stable-diffusion-webui/webui.py",
-        "--api", "--nowebui", "--skip-torch-cuda-test",
-        "--no-half-vae", "--xformers",
-        "--ckpt-dir", "/stable-diffusion-webui/models/Stable-diffusion",
-    ])
-    # A1111 시작 대기
-    for _ in range(60):
-        try:
-            r = requests.get(f"{A1111_URL}/sdapi/v1/sd-models", timeout=2)
-            if r.status_code == 200:
-                print("A1111 ready")
-                return True
-        except:
-            time.sleep(3)
-    raise RuntimeError("A1111 failed to start")
+pipe_txt2img = None
+pipe_img2img = None
 
-def txt2img(payload: dict) -> str:
-    r = requests.post(f"{A1111_URL}/sdapi/v1/txt2img", json=payload, timeout=120)
-    r.raise_for_status()
-    return r.json()["images"][0]  # base64
+def load_pipeline():
+    global pipe_txt2img, pipe_img2img
 
-def img2img(payload: dict) -> str:
-    r = requests.post(f"{A1111_URL}/sdapi/v1/img2img", json=payload, timeout=120)
-    r.raise_for_status()
-    return r.json()["images"][0]  # base64
+    if not os.path.exists(MODEL_PATH):
+        raise RuntimeError(f"Model not found: {MODEL_PATH}")
+
+    print(f"Loading model from {MODEL_PATH}...")
+
+    pipe_txt2img = StableDiffusionPipeline.from_single_file(
+        MODEL_PATH,
+        torch_dtype=torch.float16,
+        safety_checker=None,
+        requires_safety_checker=False,
+    ).to("cuda")
+    pipe_txt2img.enable_xformers_memory_efficient_attention()
+
+    pipe_img2img = StableDiffusionImg2ImgPipeline(
+        vae=pipe_txt2img.vae,
+        text_encoder=pipe_txt2img.text_encoder,
+        tokenizer=pipe_txt2img.tokenizer,
+        unet=pipe_txt2img.unet,
+        scheduler=pipe_txt2img.scheduler,
+        safety_checker=None,
+        feature_extractor=None,
+        requires_safety_checker=False,
+    ).to("cuda")
+
+    print("Model loaded!")
+
+def image_to_b64(img: Image.Image) -> str:
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
+
+def b64_to_image(b64: str) -> Image.Image:
+    data = base64.b64decode(b64)
+    return Image.open(BytesIO(data)).convert("RGB")
 
 def handler(job):
-    input_data = job["input"]
-    mode = input_data.get("mode", "txt2img")  # txt2img | img2img
-    prompt = input_data.get("prompt", "")
-    negative_prompt = input_data.get("negative_prompt", "")
-    width = input_data.get("width", 512)
-    height = input_data.get("height", 768)
-    steps = input_data.get("steps", 28)
-    cfg_scale = input_data.get("cfg_scale", 7)
-    seed = input_data.get("seed", -1)
-    denoising_strength = input_data.get("denoising_strength", 0.75)
-    init_image = input_data.get("init_image", None)  # base64, img2img용
-    controlnet_image = input_data.get("controlnet_image", None)  # base64, 포즈용
+    global pipe_txt2img, pipe_img2img
 
-    base_payload = {
-        "prompt": prompt,
-        "negative_prompt": negative_prompt,
-        "width": width,
-        "height": height,
-        "steps": steps,
-        "cfg_scale": cfg_scale,
-        "seed": seed,
-        "sampler_name": "DPM++ 2M Karras",
-        "override_settings": {
-            "sd_model_checkpoint": "chilloutmix_NiPrunedFp32Fix.safetensors"
-        },
-        "alwayson_scripts": {
-            "ADetailer": {
-                "args": [True, {"ad_model": "face_yolov8n.pt"}]
-            }
-        }
-    }
+    if pipe_txt2img is None:
+        load_pipeline()
 
-    # ControlNet 포즈 이미지 있으면 추가
-    if controlnet_image:
-        base_payload["alwayson_scripts"]["ControlNet"] = {
-            "args": [{
-                "input_image": controlnet_image,
-                "module": "openpose",
-                "model": "control_sd15_openpose",
-                "weight": 0.8,
-                "enabled": True
-            }]
-        }
+    inp = job["input"]
+    mode = inp.get("mode", "txt2img")
+    prompt = inp.get("prompt", "")
+    negative_prompt = inp.get("negative_prompt", "")
+    width = inp.get("width", 512)
+    height = inp.get("height", 768)
+    steps = inp.get("steps", 28)
+    cfg_scale = inp.get("cfg_scale", 7)
+    seed = inp.get("seed", -1)
+    denoising_strength = inp.get("denoising_strength", 0.75)
+    init_image_b64 = inp.get("init_image", None)
+
+    generator = torch.Generator("cuda")
+    if seed != -1:
+        generator.manual_seed(seed)
+    else:
+        generator.manual_seed(torch.randint(0, 2**32, (1,)).item())
 
     try:
-        if mode == "img2img" and init_image:
-            payload = {
-                **base_payload,
-                "init_images": [init_image],
-                "denoising_strength": denoising_strength
-            }
-            image_b64 = img2img(payload)
+        if mode == "img2img" and init_image_b64:
+            init_image = b64_to_image(init_image_b64).resize((width, height))
+            result = pipe_img2img(
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                image=init_image,
+                strength=denoising_strength,
+                num_inference_steps=steps,
+                guidance_scale=cfg_scale,
+                generator=generator,
+            )
         else:
-            image_b64 = txt2img(base_payload)
+            result = pipe_txt2img(
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                width=width,
+                height=height,
+                num_inference_steps=steps,
+                guidance_scale=cfg_scale,
+                generator=generator,
+            )
 
+        image_b64 = image_to_b64(result.images[0])
         return {"image": image_b64, "status": "success"}
 
     except Exception as e:
         return {"error": str(e), "status": "failed"}
 
 
-# A1111 시작
-start_a1111()
 runpod.serverless.start({"handler": handler})
