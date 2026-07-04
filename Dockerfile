@@ -13,7 +13,6 @@ RUN pip install --no-cache-dir \
     transformers \
     accelerate \
     safetensors \
-    xformers \
     runpod \
     requests \
     Pillow

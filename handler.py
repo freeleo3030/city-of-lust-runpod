@@ -26,8 +26,6 @@ def load_pipeline():
         safety_checker=None,
         requires_safety_checker=False,
     ).to("cuda")
-    pipe_txt2img.enable_xformers_memory_efficient_attention()
-
     pipe_img2img = StableDiffusionImg2ImgPipeline(
         vae=pipe_txt2img.vae,
         text_encoder=pipe_txt2img.text_encoder,
