@@ -22,13 +22,13 @@ RUN git clone https://github.com/Mikubill/sd-webui-controlnet extensions/sd-webu
 # ADetailer 설치
 RUN git clone https://github.com/Bing-su/adetailer extensions/adetailer
 
-# A1111이 필요로 하는 repositories 직접 클론
+# A1111이 필요로 하는 repositories 직접 클론 (shallow)
 RUN mkdir -p repositories && \
-    git clone https://github.com/Stability-AI/stablediffusion repositories/stable-diffusion-stability-ai && \
-    git clone https://github.com/Stability-AI/generative-models repositories/generative-models && \
-    git clone https://github.com/crowsonkb/k-diffusion repositories/k-diffusion && \
-    git clone https://github.com/sczhou/CodeFormer repositories/CodeFormer && \
-    git clone https://github.com/salesforce/BLIP repositories/BLIP
+    git clone --depth=1 https://github.com/Stability-AI/stablediffusion repositories/stable-diffusion-stability-ai && \
+    git clone --depth=1 https://github.com/Stability-AI/generative-models repositories/generative-models && \
+    git clone --depth=1 https://github.com/crowsonkb/k-diffusion repositories/k-diffusion && \
+    git clone --depth=1 https://github.com/sczhou/CodeFormer repositories/CodeFormer && \
+    git clone --depth=1 https://github.com/salesforce/BLIP repositories/BLIP
 
 # RunPod 핸들러
 RUN pip install runpod requests
