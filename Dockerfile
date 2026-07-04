@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y \
 # diffusers + 필요 패키지 (torch는 base image 것 유지)
 RUN pip install --no-cache-dir \
     diffusers==0.29.2 \
-    transformers \
+    transformers==4.40.2 \
     accelerate \
     safetensors \
     runpod \
