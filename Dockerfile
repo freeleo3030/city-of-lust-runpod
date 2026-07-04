@@ -17,6 +17,9 @@ RUN pip install --no-cache-dir \
     requests \
     Pillow
 
+# diffusers import 검증
+RUN python -c "import torch; import diffusers; print('imports ok, torch:', torch.__version__)"
+
 COPY handler.py /handler.py
 COPY start.sh /start.sh
 RUN chmod +x /start.sh
