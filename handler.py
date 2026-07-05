@@ -38,9 +38,8 @@ def generate_image(prompt, negative_prompt, width, height, steps, cfg_scale, see
     import comfy.model_management as model_management
     from nodes import (
         CLIPTextEncode, KSampler, VAEDecode,
-        EmptyLatentImage, SaveImage
+        EmptyLatentImage
     )
-    from comfy_extras.nodes_latent import LatentUpscaleBy
 
     # 텍스트 인코딩
     clip_encoder = CLIPTextEncode()
