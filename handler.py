@@ -86,7 +86,7 @@ def handler(job):
         # 이미지 텐서 → PIL → base64
         from PIL import Image
         import numpy as np
-        i = 255. * image_tensor[0].cpu().numpy()
+        i = 255. * image_tensor[0].detach().cpu().numpy()
         img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8))
 
         from io import BytesIO
