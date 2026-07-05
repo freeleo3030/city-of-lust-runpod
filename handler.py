@@ -1,71 +1,69 @@
 import runpod
 import base64
-import json
-import time
 import random
-import urllib.request
+import sys
+import os
 
 print("handler.py starting...", flush=True)
 
-COMFYUI_URL = "http://127.0.0.1:8188"
+# ComfyUI를 라이브러리로 직접 사용
+sys.path.insert(0, '/comfyui')
 
-def queue_prompt(prompt_workflow):
-    data = json.dumps({"prompt": prompt_workflow}).encode("utf-8")
-    req = urllib.request.Request(f"{COMFYUI_URL}/prompt", data=data, headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req) as response:
-        return json.loads(response.read())
+MODEL_PATH = "/comfyui/models/checkpoints/chilloutmix.safetensors"
 
-def get_history(prompt_id):
-    with urllib.request.urlopen(f"{COMFYUI_URL}/history/{prompt_id}") as response:
-        return json.loads(response.read())
+# 모델을 미리 로드 (cold start 시 한 번만)
+loaded_model = None
+loaded_clip = None
+loaded_vae = None
 
-def get_image(filename, subfolder, folder_type):
-    url = f"{COMFYUI_URL}/view?filename={filename}&subfolder={subfolder}&type={folder_type}"
-    with urllib.request.urlopen(url) as response:
-        return response.read()
+def load_model():
+    global loaded_model, loaded_clip, loaded_vae
+    if loaded_model is not None:
+        return
 
-def build_workflow(prompt, negative_prompt, width, height, steps, cfg_scale, seed):
-    return {
-        "4": {
-            "class_type": "CheckpointLoaderSimple",
-            "inputs": {"ckpt_name": "chilloutmix.safetensors"}
-        },
-        "5": {
-            "class_type": "EmptyLatentImage",
-            "inputs": {"width": width, "height": height, "batch_size": 1}
-        },
-        "6": {
-            "class_type": "CLIPTextEncode",
-            "inputs": {"text": prompt, "clip": ["4", 1]}
-        },
-        "7": {
-            "class_type": "CLIPTextEncode",
-            "inputs": {"text": negative_prompt, "clip": ["4", 1]}
-        },
-        "8": {
-            "class_type": "KSampler",
-            "inputs": {
-                "seed": seed,
-                "steps": steps,
-                "cfg": cfg_scale,
-                "sampler_name": "euler_ancestral",
-                "scheduler": "karras",
-                "denoise": 1.0,
-                "model": ["4", 0],
-                "positive": ["6", 0],
-                "negative": ["7", 0],
-                "latent_image": ["5", 0]
-            }
-        },
-        "9": {
-            "class_type": "VAEDecode",
-            "inputs": {"samples": ["8", 0], "vae": ["4", 2]}
-        },
-        "10": {
-            "class_type": "SaveImage",
-            "inputs": {"filename_prefix": "output", "images": ["9", 0]}
-        }
-    }
+    print("Loading ComfyUI modules...", flush=True)
+    import comfy.model_management as model_management
+    from nodes import CheckpointLoaderSimple
+
+    if not os.path.exists(MODEL_PATH):
+        raise RuntimeError(f"Model not found: {MODEL_PATH}")
+
+    print(f"Loading model from {MODEL_PATH}...", flush=True)
+    loader = CheckpointLoaderSimple()
+    loaded_model, loaded_clip, loaded_vae = loader.load_checkpoint("chilloutmix.safetensors")
+    print("Model loaded!", flush=True)
+
+def generate_image(prompt, negative_prompt, width, height, steps, cfg_scale, seed):
+    import torch
+    import comfy.model_management as model_management
+    from nodes import (
+        CLIPTextEncode, KSampler, VAEDecode,
+        EmptyLatentImage, SaveImage
+    )
+    from comfy_extras.nodes_latent import LatentUpscaleBy
+
+    # 텍스트 인코딩
+    clip_encoder = CLIPTextEncode()
+    positive = clip_encoder.encode(loaded_clip, prompt)[0]
+    negative = clip_encoder.encode(loaded_clip, negative_prompt)[0]
+
+    # 빈 레이턴트 생성
+    latent_creator = EmptyLatentImage()
+    latent = latent_creator.generate(width, height, 1)[0]
+
+    # 샘플링
+    sampler = KSampler()
+    sampled = sampler.sample(
+        loaded_model, seed, steps, cfg_scale,
+        "euler_ancestral", "karras",
+        positive, negative, latent, denoise=1.0
+    )[0]
+
+    # VAE 디코딩
+    decoder = VAEDecode()
+    image = decoder.decode(loaded_vae, sampled)[0]
+
+    return image
 
 def handler(job):
     try:
@@ -81,30 +79,23 @@ def handler(job):
         if seed == -1:
             seed = random.randint(0, 2**32 - 1)
 
-        workflow = build_workflow(prompt, negative_prompt, width, height, steps, cfg_scale, seed)
+        load_model()
 
-        print("Queueing prompt...", flush=True)
-        result = queue_prompt(workflow)
-        prompt_id = result["prompt_id"]
-        print(f"Prompt ID: {prompt_id}", flush=True)
+        print(f"Generating image: {width}x{height}, steps={steps}, seed={seed}", flush=True)
+        image_tensor = generate_image(prompt, negative_prompt, width, height, steps, cfg_scale, seed)
 
-        # 완료될 때까지 대기 (최대 300초)
-        for _ in range(300):
-            history = get_history(prompt_id)
-            if prompt_id in history:
-                break
-            time.sleep(1)
+        # 이미지 텐서 → PIL → base64
+        from PIL import Image
+        import numpy as np
+        i = 255. * image_tensor[0].cpu().numpy()
+        img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8))
 
-        # 이미지 가져오기
-        outputs = history[prompt_id]["outputs"]
-        for node_id, node_output in outputs.items():
-            if "images" in node_output:
-                img_data = node_output["images"][0]
-                image_bytes = get_image(img_data["filename"], img_data["subfolder"], img_data["type"])
-                image_b64 = base64.b64encode(image_bytes).decode("utf-8")
-                return {"image": image_b64, "status": "success"}
+        from io import BytesIO
+        buf = BytesIO()
+        img.save(buf, format="PNG")
+        image_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
 
-        return {"error": "No image generated", "status": "failed"}
+        return {"image": image_b64, "status": "success"}
 
     except Exception as e:
         import traceback
