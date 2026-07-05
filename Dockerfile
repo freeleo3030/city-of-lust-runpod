@@ -12,6 +12,11 @@ RUN apt-get update && apt-get install -y \
 RUN git clone https://github.com/comfyanonymous/ComfyUI.git /comfyui
 RUN pip install --no-cache-dir -r /comfyui/requirements.txt
 
+# ControlNet custom nodes
+RUN git clone https://github.com/Fannovel16/comfyui_controlnet_aux.git \
+    /comfyui/custom_nodes/comfyui_controlnet_aux && \
+    pip install --no-cache-dir -r /comfyui/custom_nodes/comfyui_controlnet_aux/requirements.txt
+
 # runpod + requests
 RUN pip install --no-cache-dir runpod requests Pillow
 

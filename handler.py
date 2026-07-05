@@ -9,10 +9,14 @@ print("handler.py starting...", flush=True)
 sys.path.insert(0, '/comfyui')
 
 MODEL_PATH = "/comfyui/models/checkpoints/chilloutmix.safetensors"
+CN_PATH = "/comfyui/models/controlnet/control_v11p_sd15_openpose.safetensors"
+CN_PATH_FALLBACK = "/comfyui/models/controlnet/control_v11p_sd15_openpose.pth"
 
 loaded_model = None
 loaded_clip = None
 loaded_vae = None
+loaded_controlnet = None
+
 
 def load_model():
     global loaded_model, loaded_clip, loaded_vae
@@ -26,6 +30,25 @@ def load_model():
     loader = CheckpointLoaderSimple()
     loaded_model, loaded_clip, loaded_vae = loader.load_checkpoint("chilloutmix.safetensors")
     print("Model loaded!", flush=True)
+
+
+def load_controlnet():
+    global loaded_controlnet
+    if loaded_controlnet is not None:
+        return True
+    if os.path.exists(CN_PATH):
+        cn_filename = "control_v11p_sd15_openpose.safetensors"
+    elif os.path.exists(CN_PATH_FALLBACK):
+        cn_filename = "control_v11p_sd15_openpose.pth"
+    else:
+        print("ControlNet model not found, skipping.", flush=True)
+        return False
+    from nodes import ControlNetLoader
+    print(f"Loading ControlNet model ({cn_filename})...", flush=True)
+    loader = ControlNetLoader()
+    loaded_controlnet = loader.load_controlnet(cn_filename)[0]
+    print("ControlNet loaded!", flush=True)
+    return True
 
 
 def txt2img(prompt, negative_prompt, width, height, steps, cfg_scale, seed):
@@ -56,32 +79,62 @@ def img2img(prompt, negative_prompt, init_image_b64, denoising_strength, width, 
     from io import BytesIO
     from nodes import CLIPTextEncode, KSampler, VAEDecode, VAEEncode
 
-    # base64 → PIL → tensor
     img_bytes = base64.b64decode(init_image_b64)
     pil_img = Image.open(BytesIO(img_bytes)).convert("RGB")
-
-    # 크기 맞추기 (width/height로 리사이즈)
     pil_img = pil_img.resize((width, height), Image.LANCZOS)
 
-    # PIL → ComfyUI image tensor [B, H, W, C] 0~1 float
     np_img = np.array(pil_img).astype(np.float32) / 255.0
-    image_tensor = torch.from_numpy(np_img).unsqueeze(0)  # [1, H, W, 3]
+    image_tensor = torch.from_numpy(np_img).unsqueeze(0)
 
-    # VAE 인코딩 → latent
     vae_encoder = VAEEncode()
     latent = vae_encoder.encode(loaded_vae, image_tensor)[0]
 
-    # 텍스트 인코딩
     clip_encoder = CLIPTextEncode()
     positive = clip_encoder.encode(loaded_clip, prompt)[0]
     negative = clip_encoder.encode(loaded_clip, negative_prompt)[0]
 
-    # 샘플링 (denoise < 1.0 이면 img2img)
     sampler = KSampler()
     sampled = sampler.sample(
         loaded_model, seed, steps, cfg_scale,
         "euler_ancestral", "karras",
         positive, negative, latent, denoise=denoising_strength
+    )[0]
+
+    decoder = VAEDecode()
+    return decoder.decode(loaded_vae, sampled)[0]
+
+
+def controlnet_img(prompt, negative_prompt, pose_image_b64, width, height, steps, cfg_scale, seed, cn_strength=1.0):
+    import torch
+    import numpy as np
+    from PIL import Image
+    from io import BytesIO
+    from nodes import CLIPTextEncode, KSampler, VAEDecode, EmptyLatentImage, ControlNetApply
+
+    # skeleton 이미지 로드
+    img_bytes = base64.b64decode(pose_image_b64)
+    pil_img = Image.open(BytesIO(img_bytes)).convert("RGB").resize((width, height), Image.LANCZOS)
+    np_img = np.array(pil_img).astype(np.float32) / 255.0
+    pose_tensor = torch.from_numpy(np_img).unsqueeze(0)
+
+    # 텍스트 인코딩
+    clip_encoder = CLIPTextEncode()
+    positive_base = clip_encoder.encode(loaded_clip, prompt)[0]
+    negative_cond = clip_encoder.encode(loaded_clip, negative_prompt)[0]
+
+    # ControlNet 적용
+    cn_apply = ControlNetApply()
+    positive = cn_apply.apply_controlnet(positive_base, loaded_controlnet, pose_tensor, cn_strength)[0]
+
+    # 생성
+    latent_creator = EmptyLatentImage()
+    latent = latent_creator.generate(width, height, 1)[0]
+
+    sampler = KSampler()
+    sampled = sampler.sample(
+        loaded_model, seed, steps, cfg_scale,
+        "euler_ancestral", "karras",
+        positive, negative_cond, latent, denoise=1.0
     )[0]
 
     decoder = VAEDecode()
@@ -102,7 +155,7 @@ def tensor_to_b64(image_tensor):
 def handler(job):
     try:
         inp = job["input"]
-        mode = inp.get("mode", "txt2img")  # "txt2img" | "img2img"
+        mode = inp.get("mode", "txt2img")  # "txt2img" | "img2img" | "controlnet"
         prompt = inp.get("prompt", "")
         negative_prompt = inp.get("negative_prompt", "")
         width = inp.get("width", 512)
@@ -117,7 +170,22 @@ def handler(job):
 
         print(f"Mode={mode}, {width}x{height}, steps={steps}, seed={seed}", flush=True)
 
-        if mode == "img2img":
+        if mode == "controlnet":
+            pose_image = inp.get("pose_image", "")
+            cn_strength = float(inp.get("cn_strength", 1.0))
+            if not pose_image:
+                raise ValueError("controlnet mode requires pose_image (base64)")
+            cn_ok = load_controlnet()
+            if not cn_ok:
+                # ControlNet 없으면 txt2img fallback
+                print("Falling back to txt2img (no ControlNet model)", flush=True)
+                image_tensor = txt2img(prompt, negative_prompt, width, height, steps, cfg_scale, seed)
+            else:
+                image_tensor = controlnet_img(
+                    prompt, negative_prompt, pose_image,
+                    width, height, steps, cfg_scale, seed, cn_strength
+                )
+        elif mode == "img2img":
             init_image = inp.get("init_image", "")
             denoising_strength = float(inp.get("denoising_strength", 0.75))
             if not init_image:
