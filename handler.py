@@ -1,70 +1,110 @@
 import runpod
 import base64
-import os
-from io import BytesIO
+import json
+import time
+import random
+import urllib.request
 
 print("handler.py starting...", flush=True)
 
-VOLUME_DIR = "/runpod-volume"
-MODEL_PATH = f"{VOLUME_DIR}/chilloutmix.safetensors"
+COMFYUI_URL = "http://127.0.0.1:8188"
 
-pipe = None
+def queue_prompt(prompt_workflow):
+    data = json.dumps({"prompt": prompt_workflow}).encode("utf-8")
+    req = urllib.request.Request(f"{COMFYUI_URL}/prompt", data=data, headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req) as response:
+        return json.loads(response.read())
 
-def load_pipeline():
-    global pipe
-    print("Importing torch and diffusers...", flush=True)
-    import torch
-    from diffusers import StableDiffusionPipeline
-    print(f"torch version: {torch.__version__}", flush=True)
+def get_history(prompt_id):
+    with urllib.request.urlopen(f"{COMFYUI_URL}/history/{prompt_id}") as response:
+        return json.loads(response.read())
 
-    if not os.path.exists(MODEL_PATH):
-        raise RuntimeError(f"Model not found: {MODEL_PATH}")
+def get_image(filename, subfolder, folder_type):
+    url = f"{COMFYUI_URL}/view?filename={filename}&subfolder={subfolder}&type={folder_type}"
+    with urllib.request.urlopen(url) as response:
+        return response.read()
 
-    print(f"Loading model from {MODEL_PATH}...", flush=True)
-    pipe = StableDiffusionPipeline.from_single_file(
-        MODEL_PATH,
-        torch_dtype=torch.float16,
-        safety_checker=None,
-        requires_safety_checker=False,
-    ).to("cuda")
-    print("Model loaded!", flush=True)
+def build_workflow(prompt, negative_prompt, width, height, steps, cfg_scale, seed):
+    return {
+        "4": {
+            "class_type": "CheckpointLoaderSimple",
+            "inputs": {"ckpt_name": "chilloutmix.safetensors"}
+        },
+        "5": {
+            "class_type": "EmptyLatentImage",
+            "inputs": {"width": width, "height": height, "batch_size": 1}
+        },
+        "6": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"text": prompt, "clip": ["4", 1]}
+        },
+        "7": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"text": negative_prompt, "clip": ["4", 1]}
+        },
+        "8": {
+            "class_type": "KSampler",
+            "inputs": {
+                "seed": seed,
+                "steps": steps,
+                "cfg": cfg_scale,
+                "sampler_name": "euler_ancestral",
+                "scheduler": "karras",
+                "denoise": 1.0,
+                "model": ["4", 0],
+                "positive": ["6", 0],
+                "negative": ["7", 0],
+                "latent_image": ["5", 0]
+            }
+        },
+        "9": {
+            "class_type": "VAEDecode",
+            "inputs": {"samples": ["8", 0], "vae": ["4", 2]}
+        },
+        "10": {
+            "class_type": "SaveImage",
+            "inputs": {"filename_prefix": "output", "images": ["9", 0]}
+        }
+    }
 
 def handler(job):
-    global pipe
     try:
-        if pipe is None:
-            load_pipeline()
-
-        from PIL import Image
-        import torch
-
         inp = job["input"]
         prompt = inp.get("prompt", "")
         negative_prompt = inp.get("negative_prompt", "")
         width = inp.get("width", 512)
         height = inp.get("height", 768)
-        steps = inp.get("steps", 20)
+        steps = inp.get("steps", 25)
         cfg_scale = inp.get("cfg_scale", 7)
         seed = inp.get("seed", -1)
 
-        generator = torch.Generator("cuda")
-        if seed != -1:
-            generator.manual_seed(seed)
+        if seed == -1:
+            seed = random.randint(0, 2**32 - 1)
 
-        result = pipe(
-            prompt=prompt,
-            negative_prompt=negative_prompt,
-            width=width,
-            height=height,
-            num_inference_steps=steps,
-            guidance_scale=cfg_scale,
-            generator=generator,
-        )
+        workflow = build_workflow(prompt, negative_prompt, width, height, steps, cfg_scale, seed)
 
-        buf = BytesIO()
-        result.images[0].save(buf, format="PNG")
-        image_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-        return {"image": image_b64, "status": "success"}
+        print("Queueing prompt...", flush=True)
+        result = queue_prompt(workflow)
+        prompt_id = result["prompt_id"]
+        print(f"Prompt ID: {prompt_id}", flush=True)
+
+        # 완료될 때까지 대기 (최대 300초)
+        for _ in range(300):
+            history = get_history(prompt_id)
+            if prompt_id in history:
+                break
+            time.sleep(1)
+
+        # 이미지 가져오기
+        outputs = history[prompt_id]["outputs"]
+        for node_id, node_output in outputs.items():
+            if "images" in node_output:
+                img_data = node_output["images"][0]
+                image_bytes = get_image(img_data["filename"], img_data["subfolder"], img_data["type"])
+                image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+                return {"image": image_b64, "status": "success"}
+
+        return {"error": "No image generated", "status": "failed"}
 
     except Exception as e:
         import traceback
