@@ -17,6 +17,10 @@ RUN git clone https://github.com/Fannovel16/comfyui_controlnet_aux.git \
     /comfyui/custom_nodes/comfyui_controlnet_aux && \
     pip install --no-cache-dir -r /comfyui/custom_nodes/comfyui_controlnet_aux/requirements.txt
 
+# IP-Adapter custom nodes
+RUN git clone https://github.com/cubiq/ComfyUI_IPAdapter_plus.git \
+    /comfyui/custom_nodes/ComfyUI_IPAdapter_plus
+
 # runpod + requests
 RUN pip install --no-cache-dir runpod requests Pillow
 

@@ -11,6 +11,11 @@ sys.path.insert(0, '/comfyui')
 MODEL_PATH = "/comfyui/models/checkpoints/chilloutmix.safetensors"
 CN_PATH = "/comfyui/models/controlnet/control_v11p_sd15_openpose.safetensors"
 CN_PATH_FALLBACK = "/comfyui/models/controlnet/control_v11p_sd15_openpose.pth"
+IPA_PATH = "/comfyui/models/ipadapter/ip-adapter-plus-face_sd15.bin"
+CLIP_PATH = "/comfyui/models/clip_vision/clip-vit-large-patch14.bin"
+
+loaded_ipadapter = None
+loaded_clip_vision = None
 
 loaded_model = None
 loaded_clip = None
@@ -49,6 +54,72 @@ def load_controlnet():
     loaded_controlnet = loader.load_controlnet(cn_filename)[0]
     print("ControlNet loaded!", flush=True)
     return True
+
+
+def load_ipadapter():
+    global loaded_ipadapter, loaded_clip_vision
+    if loaded_ipadapter is not None:
+        return True
+    if not os.path.exists(IPA_PATH) or not os.path.exists(CLIP_PATH):
+        print("IP-Adapter or CLIP Vision model not found, skipping.", flush=True)
+        return False
+    try:
+        from custom_nodes.ComfyUI_IPAdapter_plus.IPAdapterPlus import IPAdapterModelLoader, CLIPVisionLoader
+        print("Loading IP-Adapter model...", flush=True)
+        loader = IPAdapterModelLoader()
+        loaded_ipadapter = loader.load_ipadapter_model("ip-adapter-plus-face_sd15.bin")[0]
+        clip_loader = CLIPVisionLoader()
+        loaded_clip_vision = clip_loader.load_clip("clip-vit-large-patch14.bin")[0]
+        print("IP-Adapter loaded!", flush=True)
+        return True
+    except Exception as e:
+        print(f"IP-Adapter load failed: {e}", flush=True)
+        return False
+
+
+def ipadapter_img2img(prompt, negative_prompt, pose_image_b64, face_image_b64, width, height, steps, cfg_scale, seed, ipa_strength=0.7, denoise=0.85):
+    import torch
+    import numpy as np
+    from PIL import Image
+    from io import BytesIO
+    from nodes import CLIPTextEncode, KSampler, VAEDecode, VAEEncode
+    from custom_nodes.ComfyUI_IPAdapter_plus.IPAdapterPlus import IPAdapterAdvanced
+
+    def b64_to_tensor(b64):
+        img = Image.open(BytesIO(base64.b64decode(b64))).convert("RGB").resize((width, height), Image.LANCZOS)
+        arr = np.array(img).astype(np.float32) / 255.0
+        return torch.from_numpy(arr).unsqueeze(0)
+
+    pose_tensor = b64_to_tensor(pose_image_b64)
+    face_tensor = b64_to_tensor(face_image_b64)
+
+    # pose 이미지를 init_image로 인코딩
+    vae_encoder = VAEEncode()
+    latent = vae_encoder.encode(loaded_vae, pose_tensor)[0]
+
+    # 텍스트 인코딩
+    clip_encoder = CLIPTextEncode()
+    positive = clip_encoder.encode(loaded_clip, prompt)[0]
+    negative_cond = clip_encoder.encode(loaded_clip, negative_prompt)[0]
+
+    # IP-Adapter 적용 (얼굴 이미지 기반)
+    ipa_node = IPAdapterAdvanced()
+    model_with_ipa = ipa_node.apply_ipadapter(
+        loaded_model, loaded_ipadapter, loaded_clip_vision,
+        face_tensor, ipa_strength, 0, 1,
+        weight_type="linear", combine_embeds="concat",
+        embeds_scaling="V only"
+    )[0]
+
+    sampler = KSampler()
+    sampled = sampler.sample(
+        model_with_ipa, seed, steps, cfg_scale,
+        "euler_ancestral", "karras",
+        positive, negative_cond, latent, denoise=denoise
+    )[0]
+
+    decoder = VAEDecode()
+    return decoder.decode(loaded_vae, sampled)[0]
 
 
 def txt2img(prompt, negative_prompt, width, height, steps, cfg_scale, seed):
@@ -170,7 +241,24 @@ def handler(job):
 
         print(f"Mode={mode}, {width}x{height}, steps={steps}, seed={seed}", flush=True)
 
-        if mode == "controlnet":
+        if mode == "ipadapter":
+            pose_image = inp.get("pose_image", "")
+            face_image = inp.get("face_image", "")
+            ipa_strength = float(inp.get("ipa_strength", 0.7))
+            denoise = float(inp.get("denoising_strength", 0.85))
+            if not pose_image or not face_image:
+                raise ValueError("ipadapter mode requires pose_image and face_image (base64)")
+            ipa_ok = load_ipadapter()
+            if not ipa_ok:
+                # fallback: img2img without face
+                print("Falling back to img2img (no IP-Adapter)", flush=True)
+                image_tensor = img2img(prompt, negative_prompt, pose_image, denoise, width, height, steps, cfg_scale, seed)
+            else:
+                image_tensor = ipadapter_img2img(
+                    prompt, negative_prompt, pose_image, face_image,
+                    width, height, steps, cfg_scale, seed, ipa_strength, denoise
+                )
+        elif mode == "controlnet":
             pose_image = inp.get("pose_image", "")
             cn_strength = float(inp.get("cn_strength", 1.0))
             if not pose_image:
