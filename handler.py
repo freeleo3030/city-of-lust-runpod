@@ -64,7 +64,8 @@ def load_ipadapter():
         print("IP-Adapter or CLIP Vision model not found, skipping.", flush=True)
         return False
     try:
-        from custom_nodes.ComfyUI_IPAdapter_plus.IPAdapterPlus import IPAdapterModelLoader, CLIPVisionLoader
+        from custom_nodes.ComfyUI_IPAdapter_plus.IPAdapterPlus import IPAdapterModelLoader
+        from nodes import CLIPVisionLoader
         print("Loading IP-Adapter model...", flush=True)
         loader = IPAdapterModelLoader()
         loaded_ipadapter = loader.load_ipadapter_model("ip-adapter-plus-face_sd15.bin")[0]
