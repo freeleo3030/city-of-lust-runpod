@@ -106,10 +106,11 @@ def ipadapter_img2img(prompt, negative_prompt, pose_image_b64, face_image_b64, w
     # IP-Adapter 적용 (얼굴 이미지 기반)
     ipa_node = IPAdapterAdvanced()
     model_with_ipa = ipa_node.apply_ipadapter(
-        loaded_model, loaded_ipadapter, loaded_clip_vision,
-        face_tensor, ipa_strength, 0, 1,
-        weight_type="linear", combine_embeds="concat",
-        embeds_scaling="V only"
+        loaded_model, loaded_ipadapter, face_tensor, ipa_strength,
+        "linear", 0, 1,
+        combine_embeds="concat",
+        embeds_scaling="V only",
+        clip_vision=loaded_clip_vision
     )[0]
 
     sampler = KSampler()
