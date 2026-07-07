@@ -125,7 +125,7 @@ def ipadapter_img2img(prompt, negative_prompt, pose_image_b64, face_image_b64, w
     result = ipa_node.apply_ipadapter(
         model=loaded_model, ipadapter=loaded_ipadapter,
         clip_vision=loaded_clip_vision, image=face_tensor,
-        weight=ipa_strength, noise=0, weight_type="original",
+        weight=ipa_strength, weight_type="original",
         start_at=0.0, end_at=1.0
     )
     model_with_ipa = result[0]
