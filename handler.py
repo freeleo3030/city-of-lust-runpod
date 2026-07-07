@@ -104,9 +104,9 @@ def ipadapter_img2img(prompt, negative_prompt, pose_image_b64, face_image_b64, w
     negative_cond = clip_encoder.encode(loaded_clip, negative_prompt)[0]
 
     # IP-Adapter 적용 (얼굴 이미지 기반) - 단순 IPAdapter 사용
-    ipa_node = IPAdapter()
+    ipa_node = IPAdapter(loaded_ipadapter)
     result = ipa_node.apply_ipadapter(
-        loaded_model, loaded_ipadapter, loaded_clip_vision,
+        loaded_model, loaded_clip_vision,
         face_tensor, ipa_strength, 0, 1
     )
     model_with_ipa = result[0]
