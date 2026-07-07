@@ -81,6 +81,7 @@ def load_ipadapter():
 def ipadapter_img2img(prompt, negative_prompt, pose_image_b64, face_image_b64, width, height, steps, cfg_scale, seed, ipa_strength=0.7, denoise=0.85):
     import torch
     import numpy as np
+    torch.cuda.empty_cache()
     from PIL import Image
     from io import BytesIO
     from nodes import CLIPTextEncode, KSampler, VAEDecode, VAEEncode
@@ -99,17 +100,18 @@ def ipadapter_img2img(prompt, negative_prompt, pose_image_b64, face_image_b64, w
         raise ImportError("No usable IPAdapter class found in IPAdapterPlus module")
     print(f"Using IPAdapter class: {IPAdapterClass.__name__}", flush=True)
 
-    def b64_to_tensor(b64):
+    def b64_to_tensor(b64, size=None):
         # data URL prefix 제거
         if ',' in b64:
             b64 = b64.split(',', 1)[1]
         b64 = b64.strip()
-        img = Image.open(BytesIO(base64.b64decode(b64))).convert("RGB").resize((width, height), Image.LANCZOS)
+        target = size or (width, height)
+        img = Image.open(BytesIO(base64.b64decode(b64))).convert("RGB").resize(target, Image.LANCZOS)
         arr = np.array(img).astype(np.float32) / 255.0
         return torch.from_numpy(arr).unsqueeze(0)
 
     pose_tensor = b64_to_tensor(pose_image_b64)
-    face_tensor = b64_to_tensor(face_image_b64)
+    face_tensor = b64_to_tensor(face_image_b64, size=(224, 224))
 
     # pose 이미지를 init_image로 인코딩
     vae_encoder = VAEEncode()
