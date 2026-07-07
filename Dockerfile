@@ -21,7 +21,7 @@ RUN git clone https://github.com/Fannovel16/comfyui_controlnet_aux.git \
 RUN git clone https://github.com/cubiq/ComfyUI_IPAdapter_plus.git \
     /comfyui/custom_nodes/ComfyUI_IPAdapter_plus && \
     cd /comfyui/custom_nodes/ComfyUI_IPAdapter_plus && \
-    git checkout $(git rev-list -n 1 --before="2024-03-01" HEAD)
+    git checkout $(git rev-list -n 1 --before="2024-07-01" HEAD)
 
 # runpod + requests
 RUN pip install --no-cache-dir runpod requests Pillow
