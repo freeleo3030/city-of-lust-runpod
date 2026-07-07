@@ -20,8 +20,7 @@ RUN git clone https://github.com/Fannovel16/comfyui_controlnet_aux.git \
 # IP-Adapter custom nodes (2024-09-01 이전 안정 버전으로 고정)
 RUN git clone https://github.com/cubiq/ComfyUI_IPAdapter_plus.git \
     /comfyui/custom_nodes/ComfyUI_IPAdapter_plus && \
-    cd /comfyui/custom_nodes/ComfyUI_IPAdapter_plus && \
-    git checkout $(git rev-list -n 1 --before="2024-07-01" HEAD)
+    pip install --no-cache-dir -r /comfyui/custom_nodes/ComfyUI_IPAdapter_plus/requirements.txt || true
 
 # runpod + requests
 RUN pip install --no-cache-dir runpod requests Pillow
