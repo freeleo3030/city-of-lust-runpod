@@ -84,7 +84,7 @@ def ipadapter_img2img(prompt, negative_prompt, pose_image_b64, face_image_b64, w
     from PIL import Image
     from io import BytesIO
     from nodes import CLIPTextEncode, KSampler, VAEDecode, VAEEncode
-    from custom_nodes.ComfyUI_IPAdapter_plus.IPAdapterPlus import IPAdapter
+    from custom_nodes.ComfyUI_IPAdapter_plus.IPAdapterPlus import IPAdapterPlus
 
     def b64_to_tensor(b64):
         img = Image.open(BytesIO(base64.b64decode(b64))).convert("RGB").resize((width, height), Image.LANCZOS)
@@ -103,8 +103,8 @@ def ipadapter_img2img(prompt, negative_prompt, pose_image_b64, face_image_b64, w
     positive = clip_encoder.encode(loaded_clip, prompt)[0]
     negative_cond = clip_encoder.encode(loaded_clip, negative_prompt)[0]
 
-    # IP-Adapter 적용 (얼굴 이미지 기반) - 단순 IPAdapter 사용
-    ipa_node = IPAdapter(loaded_ipadapter)
+    # IP-Adapter Plus 적용 (얼굴 이미지 기반) - Plus 모델용 클래스
+    ipa_node = IPAdapterPlus(loaded_ipadapter)
     result = ipa_node.apply_ipadapter(
         loaded_model, loaded_clip_vision,
         face_tensor, ipa_strength, 0, 1
