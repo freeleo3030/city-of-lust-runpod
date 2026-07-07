@@ -25,6 +25,9 @@ RUN git clone https://github.com/cubiq/ComfyUI_IPAdapter_plus.git \
 # runpod + requests
 RUN pip install --no-cache-dir runpod requests Pillow
 
+# tiled VAE InferenceMode 버그 패치
+RUN sed -i 's/samples += comfy\.utils\.tiled_scale/samples = samples + comfy.utils.tiled_scale/g' /comfyui/comfy/sd.py
+
 COPY handler.py /handler.py
 COPY start.sh /start.sh
 RUN chmod +x /start.sh
