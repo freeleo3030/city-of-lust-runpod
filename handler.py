@@ -186,7 +186,8 @@ def img2img(prompt, negative_prompt, init_image_b64, denoising_strength, width, 
     image_tensor = torch.from_numpy(np_img).unsqueeze(0)
 
     vae_encoder = VAEEncode()
-    latent = vae_encoder.encode(loaded_vae, image_tensor)[0]
+    with torch.inference_mode(False):
+        latent = vae_encoder.encode(loaded_vae, image_tensor.clone())[0]
 
     clip_encoder = CLIPTextEncode()
     positive = clip_encoder.encode(loaded_clip, prompt)[0]
