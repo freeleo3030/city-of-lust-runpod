@@ -117,10 +117,12 @@ def ipadapter_img2img(prompt, negative_prompt, pose_image_b64, face_image_b64, w
     negative_cond = clip_encoder.encode(loaded_clip, negative_prompt)[0]
 
     # IP-Adapter 적용 (얼굴 이미지 기반)
-    ipa_node = IPAdapterClass(loaded_ipadapter)
+    ipa_node = IPAdapterClass()
     result = ipa_node.apply_ipadapter(
-        loaded_model, loaded_clip_vision,
-        face_tensor, ipa_strength, 0, 1
+        model=loaded_model, ipadapter=loaded_ipadapter,
+        clip_vision=loaded_clip_vision, image=face_tensor,
+        weight=ipa_strength, noise=0, weight_type="original",
+        start_at=0.0, end_at=1.0
     )
     model_with_ipa = result[0]
 
