@@ -100,6 +100,10 @@ def ipadapter_img2img(prompt, negative_prompt, pose_image_b64, face_image_b64, w
     print(f"Using IPAdapter class: {IPAdapterClass.__name__}", flush=True)
 
     def b64_to_tensor(b64):
+        # data URL prefix 제거
+        if ',' in b64:
+            b64 = b64.split(',', 1)[1]
+        b64 = b64.strip()
         img = Image.open(BytesIO(base64.b64decode(b64))).convert("RGB").resize((width, height), Image.LANCZOS)
         arr = np.array(img).astype(np.float32) / 255.0
         return torch.from_numpy(arr).unsqueeze(0)
@@ -165,7 +169,9 @@ def img2img(prompt, negative_prompt, init_image_b64, denoising_strength, width, 
     from io import BytesIO
     from nodes import CLIPTextEncode, KSampler, VAEDecode, VAEEncode
 
-    img_bytes = base64.b64decode(init_image_b64)
+    if ',' in init_image_b64:
+        init_image_b64 = init_image_b64.split(',', 1)[1]
+    img_bytes = base64.b64decode(init_image_b64.strip())
     pil_img = Image.open(BytesIO(img_bytes)).convert("RGB")
     pil_img = pil_img.resize((width, height), Image.LANCZOS)
 
