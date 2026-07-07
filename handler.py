@@ -115,7 +115,12 @@ def ipadapter_img2img(prompt, negative_prompt, pose_image_b64, face_image_b64, w
 
     # pose 이미지를 init_image로 인코딩
     vae_encoder = VAEEncode()
-    latent = vae_encoder.encode(loaded_vae, pose_tensor.clone())[0]
+    try:
+        with torch.inference_mode(False):
+            latent = vae_encoder.encode(loaded_vae, pose_tensor.clone())[0]
+    except Exception as e:
+        print(f"VAE encode failed ({e}), falling back to img2img", flush=True)
+        return img2img(prompt, negative_prompt, pose_image_b64, denoise, width, height, steps, cfg_scale, seed)
 
     # 텍스트 인코딩
     clip_encoder = CLIPTextEncode()
