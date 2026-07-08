@@ -279,14 +279,17 @@ def handler(job):
                 raise ValueError("ipadapter mode requires pose_image and face_image (base64)")
             ipa_ok = load_ipadapter()
             if not ipa_ok:
-                # fallback: img2img without face
                 print("Falling back to img2img (no IP-Adapter)", flush=True)
                 image_tensor = img2img(prompt, negative_prompt, pose_image, denoise, width, height, steps, cfg_scale, seed)
             else:
-                image_tensor = ipadapter_img2img(
-                    prompt, negative_prompt, pose_image, face_image,
-                    width, height, steps, cfg_scale, seed, ipa_strength, denoise
-                )
+                try:
+                    image_tensor = ipadapter_img2img(
+                        prompt, negative_prompt, pose_image, face_image,
+                        width, height, steps, cfg_scale, seed, ipa_strength, denoise
+                    )
+                except Exception as e:
+                    print(f"ipadapter failed ({e}), falling back to img2img", flush=True)
+                    image_tensor = img2img(prompt, negative_prompt, pose_image, denoise, width, height, steps, cfg_scale, seed)
         elif mode == "controlnet":
             pose_image = inp.get("pose_image", "")
             cn_strength = float(inp.get("cn_strength", 1.0))
