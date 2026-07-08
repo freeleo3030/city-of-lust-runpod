@@ -81,7 +81,10 @@ def load_ipadapter():
 def ipadapter_img2img(prompt, negative_prompt, pose_image_b64, face_image_b64, width, height, steps, cfg_scale, seed, ipa_strength=0.7, denoise=0.85):
     import torch
     import numpy as np
+    import gc
+    gc.collect()
     torch.cuda.empty_cache()
+    torch.cuda.synchronize()
     from PIL import Image
     from io import BytesIO
     from nodes import CLIPTextEncode, KSampler, VAEDecode, VAEEncode
@@ -172,7 +175,10 @@ def txt2img(prompt, negative_prompt, width, height, steps, cfg_scale, seed):
 def img2img(prompt, negative_prompt, init_image_b64, denoising_strength, width, height, steps, cfg_scale, seed):
     import torch
     import numpy as np
+    import gc
+    gc.collect()
     torch.cuda.empty_cache()
+    torch.cuda.synchronize()
     from PIL import Image
     from io import BytesIO
     from nodes import CLIPTextEncode, KSampler, VAEDecode, VAEEncode
@@ -261,7 +267,7 @@ def handler(job):
         negative_prompt = inp.get("negative_prompt", "")
         width = inp.get("width", 512)
         height = inp.get("height", 768)
-        steps = inp.get("steps", 25)
+        steps = inp.get("steps", 20)
         cfg_scale = inp.get("cfg_scale", 7)
         seed = inp.get("seed", -1)
         if seed == -1:
