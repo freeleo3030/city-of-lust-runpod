@@ -185,7 +185,12 @@ def img2img(prompt, negative_prompt, init_image_b64, denoising_strength, width, 
 
     if ',' in init_image_b64:
         init_image_b64 = init_image_b64.split(',', 1)[1]
-    img_bytes = base64.b64decode(init_image_b64.strip())
+    init_image_b64 = init_image_b64.strip()
+    try:
+        init_image_b64.encode('ascii')
+    except (UnicodeEncodeError, UnicodeDecodeError) as enc_err:
+        raise ValueError(f"pose_image contains non-ASCII chars: {enc_err}") from None
+    img_bytes = base64.b64decode(init_image_b64)
     pil_img = Image.open(BytesIO(img_bytes)).convert("RGB")
     pil_img = pil_img.resize((width, height), Image.LANCZOS)
 
