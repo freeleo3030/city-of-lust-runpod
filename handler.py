@@ -172,6 +172,7 @@ def txt2img(prompt, negative_prompt, width, height, steps, cfg_scale, seed):
 def img2img(prompt, negative_prompt, init_image_b64, denoising_strength, width, height, steps, cfg_scale, seed):
     import torch
     import numpy as np
+    torch.cuda.empty_cache()
     from PIL import Image
     from io import BytesIO
     from nodes import CLIPTextEncode, KSampler, VAEDecode, VAEEncode
