@@ -354,6 +354,15 @@ def tensor_to_b64(image_tensor):
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 
+def log_vram(label=""):
+    try:
+        import torch
+        free, total = torch.cuda.mem_get_info()
+        print(f"[VRAM]{' ' + label if label else ''}: {free/1024**3:.1f}GB free / {total/1024**3:.1f}GB total", flush=True)
+    except Exception:
+        pass
+
+
 def handler(job):
     try:
         inp = job["input"]
@@ -369,6 +378,7 @@ def handler(job):
             seed = random.randint(0, 2**32 - 1)
 
         load_model()
+        log_vram("before generation")
 
         print(f"Mode={mode}, {width}x{height}, steps={steps}, seed={seed}", flush=True)
 
@@ -445,6 +455,11 @@ def handler(job):
             image_tensor = txt2img(prompt, negative_prompt, width, height, steps, cfg_scale, seed)
 
         image_b64 = tensor_to_b64(image_tensor)
+        import gc, torch
+        del image_tensor
+        gc.collect()
+        torch.cuda.empty_cache()
+        log_vram("after generation")
         return {"image": image_b64, "status": "success"}
 
     except Exception as e:
