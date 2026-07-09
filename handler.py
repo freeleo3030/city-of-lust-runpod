@@ -164,6 +164,7 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
     import gc
     gc.collect()
     torch.cuda.empty_cache()
+    torch.cuda.synchronize()
     from PIL import Image
     from io import BytesIO
     from nodes import CLIPTextEncode, KSampler, VAEDecode, EmptyLatentImage
@@ -179,6 +180,8 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
     if IPAdapterClass is None:
         raise ImportError("No usable IPAdapter class found in IPAdapterPlus module")
     print(f"IPA txt2img using: {IPAdapterClass.__name__}", flush=True)
+    free, total = torch.cuda.mem_get_info()
+    print(f"VRAM before IPA: {free//1024//1024}MB free / {total//1024//1024}MB total", flush=True)
 
     if ',' in face_image_b64:
         face_image_b64 = face_image_b64.split(',', 1)[1]
@@ -211,7 +214,14 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
     )[0]
 
     decoder = VAEDecode()
-    return decoder.decode(loaded_vae, sampled)[0]
+    result_image = decoder.decode(loaded_vae, sampled)[0]
+
+    # IPA 적용 후 임시 모델 참조 해제 → VRAM 확보
+    del model_with_ipa, face_tensor, sampled
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    return result_image
 
 
 def txt2img(prompt, negative_prompt, width, height, steps, cfg_scale, seed):
@@ -374,7 +384,11 @@ def handler(job):
                         width, height, steps, cfg_scale, seed, ipa_strength
                     )
                 except Exception as e:
-                    print(f"ipadapter txt2img failed ({e}), falling back to txt2img", flush=True)
+                    import torch, gc
+                    print(f"ipadapter txt2img failed ({e}), clearing VRAM and falling back to txt2img", flush=True)
+                    gc.collect()
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
                     image_tensor = txt2img(prompt, negative_prompt, width, height, steps, cfg_scale, seed)
         elif mode == "controlnet":
             pose_image = inp.get("pose_image", "")
