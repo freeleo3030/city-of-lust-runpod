@@ -165,6 +165,14 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
     gc.collect()
     torch.cuda.empty_cache()
     torch.cuda.synchronize()
+
+    # VRAM 여유 확인 — 2GB 미만이면 IPA 스킵
+    free, total = torch.cuda.mem_get_info()
+    free_gb = free / 1024 / 1024 / 1024
+    print(f"VRAM before IPA: {int(free/1024/1024)}MB free / {int(total/1024/1024)}MB total", flush=True)
+    if free_gb < 2.0:
+        print(f"VRAM too low ({free_gb:.1f}GB free), skipping IPA → txt2img", flush=True)
+        return txt2img(prompt, negative_prompt, width, height, steps, cfg_scale, seed)
     from PIL import Image
     from io import BytesIO
     from nodes import CLIPTextEncode, KSampler, VAEDecode, EmptyLatentImage
@@ -180,8 +188,6 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
     if IPAdapterClass is None:
         raise ImportError("No usable IPAdapter class found in IPAdapterPlus module")
     print(f"IPA txt2img using: {IPAdapterClass.__name__}", flush=True)
-    free, total = torch.cuda.mem_get_info()
-    print(f"VRAM before IPA: {free//1024//1024}MB free / {total//1024//1024}MB total", flush=True)
 
     if ',' in face_image_b64:
         face_image_b64 = face_image_b64.split(',', 1)[1]
