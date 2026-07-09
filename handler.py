@@ -11,7 +11,8 @@ sys.path.insert(0, '/comfyui')
 MODEL_PATH = "/comfyui/models/checkpoints/chilloutmix.safetensors"
 CN_PATH = "/comfyui/models/controlnet/control_v11p_sd15_openpose.safetensors"
 CN_PATH_FALLBACK = "/comfyui/models/controlnet/control_v11p_sd15_openpose.pth"
-IPA_PATH = "/comfyui/models/ipadapter/ip-adapter-plus-face_sd15.bin"
+IPA_PATH = "/comfyui/models/ipadapter/ip-adapter-plus-face_sd15.safetensors"
+IPA_PATH_FALLBACK = "/comfyui/models/ipadapter/ip-adapter-plus-face_sd15.bin"
 CLIP_PATH = "/comfyui/models/clip_vision/clip-vit-large-patch14.bin"
 
 loaded_ipadapter = None
@@ -60,15 +61,20 @@ def load_ipadapter():
     global loaded_ipadapter, loaded_clip_vision
     if loaded_ipadapter is not None:
         return True
-    if not os.path.exists(IPA_PATH) or not os.path.exists(CLIP_PATH):
+    ipa_filename = None
+    if os.path.exists(IPA_PATH):
+        ipa_filename = "ip-adapter-plus-face_sd15.safetensors"
+    elif os.path.exists(IPA_PATH_FALLBACK):
+        ipa_filename = "ip-adapter-plus-face_sd15.bin"
+    if not ipa_filename or not os.path.exists(CLIP_PATH):
         print("IP-Adapter or CLIP Vision model not found, skipping.", flush=True)
         return False
     try:
         from custom_nodes.ComfyUI_IPAdapter_plus.IPAdapterPlus import IPAdapterModelLoader
         from nodes import CLIPVisionLoader
-        print("Loading IP-Adapter model...", flush=True)
+        print(f"Loading IP-Adapter model ({ipa_filename})...", flush=True)
         loader = IPAdapterModelLoader()
-        loaded_ipadapter = loader.load_ipadapter_model("ip-adapter-plus-face_sd15.bin")[0]
+        loaded_ipadapter = loader.load_ipadapter_model(ipa_filename)[0]
         clip_loader = CLIPVisionLoader()
         loaded_clip_vision = clip_loader.load_clip("clip-vit-large-patch14.bin")[0]
         print("IP-Adapter loaded!", flush=True)
