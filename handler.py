@@ -110,14 +110,20 @@ def ipadapter_img2img(prompt, negative_prompt, pose_image_b64, face_image_b64, w
     print(f"Using IPAdapter class: {IPAdapterClass.__name__}", flush=True)
 
     def b64_to_tensor(b64, size=None):
-        # data URL prefix 제거
-        if ',' in b64:
-            b64 = b64.split(',', 1)[1]
-        b64 = b64.strip()
-        b64 = b64.encode('ascii', errors='ignore').decode('ascii')
-        b64 += '=' * (-len(b64) % 4)  # 패딩 보정
+        import urllib.request as _ur
         target = size or (width, height)
-        img = Image.open(BytesIO(base64.b64decode(b64))).convert("RGB").resize(target, Image.LANCZOS)
+        # URL이면 다운로드
+        if b64.startswith('http://') or b64.startswith('https://'):
+            with _ur.urlopen(b64, timeout=15) as r:
+                img = Image.open(BytesIO(r.read())).convert("RGB").resize(target, Image.LANCZOS)
+        else:
+            # data URL prefix 제거
+            if ',' in b64:
+                b64 = b64.split(',', 1)[1]
+            b64 = b64.strip()
+            b64 = b64.encode('ascii', errors='ignore').decode('ascii')
+            b64 += '=' * (-len(b64) % 4)  # 패딩 보정
+            img = Image.open(BytesIO(base64.b64decode(b64))).convert("RGB").resize(target, Image.LANCZOS)
         arr = np.array(img).astype(np.float32) / 255.0
         return torch.from_numpy(arr).unsqueeze(0)
 
@@ -264,13 +270,18 @@ def img2img(prompt, negative_prompt, init_image_b64, denoising_strength, width, 
     from io import BytesIO
     from nodes import CLIPTextEncode, KSampler, VAEDecode, VAEEncode
 
-    if ',' in init_image_b64:
-        init_image_b64 = init_image_b64.split(',', 1)[1]
-    init_image_b64 = init_image_b64.strip()
-    init_image_b64 = init_image_b64.encode('ascii', errors='ignore').decode('ascii')
-    init_image_b64 += '=' * (-len(init_image_b64) % 4)  # 패딩 보정
-    img_bytes = base64.b64decode(init_image_b64)
-    pil_img = Image.open(BytesIO(img_bytes)).convert("RGB")
+    import urllib.request as _ur
+    if init_image_b64.startswith('http://') or init_image_b64.startswith('https://'):
+        with _ur.urlopen(init_image_b64, timeout=15) as r:
+            pil_img = Image.open(BytesIO(r.read())).convert("RGB")
+    else:
+        if ',' in init_image_b64:
+            init_image_b64 = init_image_b64.split(',', 1)[1]
+        init_image_b64 = init_image_b64.strip()
+        init_image_b64 = init_image_b64.encode('ascii', errors='ignore').decode('ascii')
+        init_image_b64 += '=' * (-len(init_image_b64) % 4)  # 패딩 보정
+        img_bytes = base64.b64decode(init_image_b64)
+        pil_img = Image.open(BytesIO(img_bytes)).convert("RGB")
     pil_img = pil_img.resize((width, height), Image.LANCZOS)
 
     np_img = np.array(pil_img).astype(np.float32) / 255.0
