@@ -392,9 +392,17 @@ def handler(job):
                     )
                 except Exception as e:
                     import torch, gc
-                    print(f"ipadapter img2img failed ({e}), falling back to img2img", flush=True)
+                    print(f"ipadapter img2img failed ({e}), falling back to ipadapter txt2img", flush=True)
                     gc.collect(); torch.cuda.empty_cache()
-                    image_tensor = img2img(prompt, negative_prompt, pose_image, denoise, width, height, steps, cfg_scale, seed)
+                    try:
+                        image_tensor = ipadapter_txt2img(
+                            prompt, negative_prompt, face_image,
+                            width, height, steps, cfg_scale, seed, ipa_strength
+                        )
+                    except Exception as e2:
+                        print(f"ipadapter txt2img also failed ({e2}), falling back to txt2img", flush=True)
+                        gc.collect(); torch.cuda.empty_cache()
+                        image_tensor = txt2img(prompt, negative_prompt, width, height, steps, cfg_scale, seed)
             else:
                 # pose_image 없으면 txt2img + IP-Adapter (얼굴만 conditioning)
                 try:
