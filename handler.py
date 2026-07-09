@@ -114,6 +114,8 @@ def ipadapter_img2img(prompt, negative_prompt, pose_image_b64, face_image_b64, w
         if ',' in b64:
             b64 = b64.split(',', 1)[1]
         b64 = b64.strip()
+        # 비ASCII 문자 제거 (base64.b64decode가 ASCII만 허용)
+        b64 = b64.encode('ascii', errors='ignore').decode('ascii')
         target = size or (width, height)
         img = Image.open(BytesIO(base64.b64decode(b64))).convert("RGB").resize(target, Image.LANCZOS)
         arr = np.array(img).astype(np.float32) / 255.0
@@ -265,10 +267,7 @@ def img2img(prompt, negative_prompt, init_image_b64, denoising_strength, width, 
     if ',' in init_image_b64:
         init_image_b64 = init_image_b64.split(',', 1)[1]
     init_image_b64 = init_image_b64.strip()
-    try:
-        init_image_b64.encode('ascii')
-    except (UnicodeEncodeError, UnicodeDecodeError) as enc_err:
-        raise ValueError(f"pose_image contains non-ASCII chars: {enc_err}") from None
+    init_image_b64 = init_image_b64.encode('ascii', errors='ignore').decode('ascii')
     img_bytes = base64.b64decode(init_image_b64)
     pil_img = Image.open(BytesIO(img_bytes)).convert("RGB")
     pil_img = pil_img.resize((width, height), Image.LANCZOS)
@@ -380,8 +379,10 @@ def handler(job):
                         width, height, steps, cfg_scale, seed, ipa_strength, denoise
                     )
                 except Exception as e:
-                    print(f"ipadapter img2img failed ({e}), falling back to txt2img", flush=True)
-                    image_tensor = txt2img(prompt, negative_prompt, width, height, steps, cfg_scale, seed)
+                    import torch, gc
+                    print(f"ipadapter img2img failed ({e}), falling back to img2img", flush=True)
+                    gc.collect(); torch.cuda.empty_cache()
+                    image_tensor = img2img(prompt, negative_prompt, pose_image, denoise, width, height, steps, cfg_scale, seed)
             else:
                 # pose_image 없으면 txt2img + IP-Adapter (얼굴만 conditioning)
                 try:
