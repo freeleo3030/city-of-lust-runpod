@@ -6,6 +6,9 @@ import os
 
 print("handler.py starting...", flush=True)
 
+import os
+os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
+
 sys.path.insert(0, '/comfyui')
 
 MODEL_PATH = "/comfyui/models/checkpoints/chilloutmix.safetensors"
@@ -463,8 +466,11 @@ def handler(job):
         return {"image": image_b64, "status": "success"}
 
     except Exception as e:
-        import traceback
+        import traceback, gc, torch
         print(traceback.format_exc(), flush=True)
+        gc.collect()
+        torch.cuda.empty_cache()
+        log_vram("after error")
         return {"error": str(e), "status": "failed"}
 
 
