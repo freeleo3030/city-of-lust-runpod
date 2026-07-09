@@ -157,6 +157,63 @@ def ipadapter_img2img(prompt, negative_prompt, pose_image_b64, face_image_b64, w
     return decoder.decode(loaded_vae, sampled)[0]
 
 
+def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, steps, cfg_scale, seed, ipa_strength=0.35):
+    """txt2img + IP-Adapter 얼굴 conditioning (pose_image 없이)"""
+    import torch
+    import numpy as np
+    import gc
+    gc.collect()
+    torch.cuda.empty_cache()
+    from PIL import Image
+    from io import BytesIO
+    from nodes import CLIPTextEncode, KSampler, VAEDecode, EmptyLatentImage
+    ipa_module = __import__(
+        'custom_nodes.ComfyUI_IPAdapter_plus.IPAdapterPlus',
+        fromlist=['IPAdapterAdvanced', 'IPAdapterPlus', 'IPAdapter']
+    )
+    IPAdapterClass = (
+        getattr(ipa_module, 'IPAdapterAdvanced', None) or
+        getattr(ipa_module, 'IPAdapterPlus', None) or
+        getattr(ipa_module, 'IPAdapter', None)
+    )
+    if IPAdapterClass is None:
+        raise ImportError("No usable IPAdapter class found in IPAdapterPlus module")
+    print(f"IPA txt2img using: {IPAdapterClass.__name__}", flush=True)
+
+    if ',' in face_image_b64:
+        face_image_b64 = face_image_b64.split(',', 1)[1]
+    face_b = face_image_b64.strip()
+    face_img = Image.open(BytesIO(base64.b64decode(face_b))).convert("RGB").resize((224, 224), Image.LANCZOS)
+    face_arr = np.array(face_img).astype(np.float32) / 255.0
+    face_tensor = torch.from_numpy(face_arr).unsqueeze(0)
+
+    clip_encoder = CLIPTextEncode()
+    positive = clip_encoder.encode(loaded_clip, prompt)[0]
+    negative_cond = clip_encoder.encode(loaded_clip, negative_prompt)[0]
+
+    latent_creator = EmptyLatentImage()
+    latent = latent_creator.generate(width, height, 1)[0]
+
+    ipa_node = IPAdapterClass()
+    result = ipa_node.apply_ipadapter(
+        model=loaded_model, ipadapter=loaded_ipadapter,
+        clip_vision=loaded_clip_vision, image=face_tensor,
+        weight=ipa_strength, weight_type="original",
+        start_at=0.0, end_at=1.0
+    )
+    model_with_ipa = result[0]
+
+    sampler = KSampler()
+    sampled = sampler.sample(
+        model_with_ipa, seed, steps, cfg_scale,
+        "euler_ancestral", "karras",
+        positive, negative_cond, latent, denoise=1.0
+    )[0]
+
+    decoder = VAEDecode()
+    return decoder.decode(loaded_vae, sampled)[0]
+
+
 def txt2img(prompt, negative_prompt, width, height, steps, cfg_scale, seed):
     from nodes import CLIPTextEncode, KSampler, VAEDecode, EmptyLatentImage
 
@@ -291,23 +348,34 @@ def handler(job):
         if mode == "ipadapter":
             pose_image = inp.get("pose_image", "")
             face_image = inp.get("face_image", "")
-            ipa_strength = float(inp.get("ipa_strength", 0.7))
+            ipa_strength = float(inp.get("ipa_strength", 0.35))
             denoise = float(inp.get("denoising_strength", 0.85))
-            if not pose_image or not face_image:
-                raise ValueError("ipadapter mode requires pose_image and face_image (base64)")
+            if not face_image:
+                raise ValueError("ipadapter mode requires face_image (base64)")
             ipa_ok = load_ipadapter()
             if not ipa_ok:
-                print("Falling back to img2img (no IP-Adapter)", flush=True)
-                image_tensor = img2img(prompt, negative_prompt, pose_image, denoise, width, height, steps, cfg_scale, seed)
-            else:
+                print("IP-Adapter not available, falling back to txt2img", flush=True)
+                image_tensor = txt2img(prompt, negative_prompt, width, height, steps, cfg_scale, seed)
+            elif pose_image:
+                # pose_image 있으면 img2img + IP-Adapter
                 try:
                     image_tensor = ipadapter_img2img(
                         prompt, negative_prompt, pose_image, face_image,
                         width, height, steps, cfg_scale, seed, ipa_strength, denoise
                     )
                 except Exception as e:
-                    print(f"ipadapter failed ({e}), falling back to img2img", flush=True)
-                    image_tensor = img2img(prompt, negative_prompt, pose_image, denoise, width, height, steps, cfg_scale, seed)
+                    print(f"ipadapter img2img failed ({e}), falling back to txt2img", flush=True)
+                    image_tensor = txt2img(prompt, negative_prompt, width, height, steps, cfg_scale, seed)
+            else:
+                # pose_image 없으면 txt2img + IP-Adapter (얼굴만 conditioning)
+                try:
+                    image_tensor = ipadapter_txt2img(
+                        prompt, negative_prompt, face_image,
+                        width, height, steps, cfg_scale, seed, ipa_strength
+                    )
+                except Exception as e:
+                    print(f"ipadapter txt2img failed ({e}), falling back to txt2img", flush=True)
+                    image_tensor = txt2img(prompt, negative_prompt, width, height, steps, cfg_scale, seed)
         elif mode == "controlnet":
             pose_image = inp.get("pose_image", "")
             cn_strength = float(inp.get("cn_strength", 1.0))
