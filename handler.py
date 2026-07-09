@@ -157,15 +157,21 @@ def ipadapter_img2img(prompt, negative_prompt, pose_image_b64, face_image_b64, w
     )
     model_with_ipa = result[0]
 
-    sampler = KSampler()
-    sampled = sampler.sample(
-        model_with_ipa, seed, steps, cfg_scale,
-        "euler_ancestral", "karras",
-        positive, negative_cond, latent, denoise=denoise
-    )[0]
+    try:
+        sampler = KSampler()
+        sampled = sampler.sample(
+            model_with_ipa, seed, steps, cfg_scale,
+            "euler_ancestral", "karras",
+            positive, negative_cond, latent, denoise=denoise
+        )[0]
 
-    decoder = VAEDecode()
-    return decoder.decode(loaded_vae, sampled)[0]
+        decoder = VAEDecode()
+        return decoder.decode(loaded_vae, sampled)[0]
+    finally:
+        import gc, torch
+        del model_with_ipa
+        gc.collect()
+        torch.cuda.empty_cache()
 
 
 def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, steps, cfg_scale, seed, ipa_strength=0.35):
@@ -223,20 +229,20 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
     )
     model_with_ipa = result[0]
 
-    sampler = KSampler()
-    sampled = sampler.sample(
-        model_with_ipa, seed, steps, cfg_scale,
-        "euler_ancestral", "karras",
-        positive, negative_cond, latent, denoise=1.0
-    )[0]
+    try:
+        sampler = KSampler()
+        sampled = sampler.sample(
+            model_with_ipa, seed, steps, cfg_scale,
+            "euler_ancestral", "karras",
+            positive, negative_cond, latent, denoise=1.0
+        )[0]
 
-    decoder = VAEDecode()
-    result_image = decoder.decode(loaded_vae, sampled)[0]
-
-    # IPA 적용 후 임시 모델 참조 해제 → VRAM 확보
-    del model_with_ipa, face_tensor, sampled
-    gc.collect()
-    torch.cuda.empty_cache()
+        decoder = VAEDecode()
+        result_image = decoder.decode(loaded_vae, sampled)[0]
+    finally:
+        del model_with_ipa
+        gc.collect()
+        torch.cuda.empty_cache()
 
     return result_image
 
