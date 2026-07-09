@@ -114,8 +114,8 @@ def ipadapter_img2img(prompt, negative_prompt, pose_image_b64, face_image_b64, w
         if ',' in b64:
             b64 = b64.split(',', 1)[1]
         b64 = b64.strip()
-        # 비ASCII 문자 제거 (base64.b64decode가 ASCII만 허용)
         b64 = b64.encode('ascii', errors='ignore').decode('ascii')
+        b64 += '=' * (-len(b64) % 4)  # 패딩 보정
         target = size or (width, height)
         img = Image.open(BytesIO(base64.b64decode(b64))).convert("RGB").resize(target, Image.LANCZOS)
         arr = np.array(img).astype(np.float32) / 255.0
@@ -268,6 +268,7 @@ def img2img(prompt, negative_prompt, init_image_b64, denoising_strength, width, 
         init_image_b64 = init_image_b64.split(',', 1)[1]
     init_image_b64 = init_image_b64.strip()
     init_image_b64 = init_image_b64.encode('ascii', errors='ignore').decode('ascii')
+    init_image_b64 += '=' * (-len(init_image_b64) % 4)  # 패딩 보정
     img_bytes = base64.b64decode(init_image_b64)
     pil_img = Image.open(BytesIO(img_bytes)).convert("RGB")
     pil_img = pil_img.resize((width, height), Image.LANCZOS)
