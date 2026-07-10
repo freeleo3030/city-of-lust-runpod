@@ -112,26 +112,37 @@ def ipadapter_img2img(prompt, negative_prompt, pose_image_b64, face_image_b64, w
         raise ImportError("No usable IPAdapter class found in IPAdapterPlus module")
     print(f"Using IPAdapter class: {IPAdapterClass.__name__}", flush=True)
 
-    def b64_to_tensor(b64, size=None):
+    def b64_to_tensor(b64, label="image", size=None):
         import urllib.request as _ur
         target = size or (width, height)
-        # URL이면 다운로드
         if b64.startswith('http://') or b64.startswith('https://'):
-            with _ur.urlopen(b64, timeout=15) as r:
-                img = Image.open(BytesIO(r.read())).convert("RGB").resize(target, Image.LANCZOS)
+            print(f"[b64_to_tensor] downloading {label} from URL: {b64[:80]}", flush=True)
+            try:
+                req = _ur.Request(b64, headers={'User-Agent': 'Mozilla/5.0'})
+                with _ur.urlopen(req, timeout=15) as r:
+                    raw = r.read()
+                print(f"[b64_to_tensor] downloaded {label}: {len(raw)} bytes, status={r.status}", flush=True)
+                img = Image.open(BytesIO(raw)).convert("RGB").resize(target, Image.LANCZOS)
+            except Exception as e:
+                print(f"[b64_to_tensor] FAILED to load {label} from URL: {e}", flush=True)
+                raise
         else:
-            # data URL prefix 제거
-            if ',' in b64:
-                b64 = b64.split(',', 1)[1]
-            b64 = b64.strip()
-            b64 = b64.encode('ascii', errors='ignore').decode('ascii')
-            b64 += '=' * (-len(b64) % 4)  # 패딩 보정
-            img = Image.open(BytesIO(base64.b64decode(b64))).convert("RGB").resize(target, Image.LANCZOS)
+            print(f"[b64_to_tensor] decoding {label} from base64 (len={len(b64)})", flush=True)
+            try:
+                if ',' in b64:
+                    b64 = b64.split(',', 1)[1]
+                b64 = b64.strip()
+                b64 = b64.encode('ascii', errors='ignore').decode('ascii')
+                b64 += '=' * (-len(b64) % 4)
+                img = Image.open(BytesIO(base64.b64decode(b64))).convert("RGB").resize(target, Image.LANCZOS)
+            except Exception as e:
+                print(f"[b64_to_tensor] FAILED to decode {label} base64: {e}", flush=True)
+                raise
         arr = np.array(img).astype(np.float32) / 255.0
         return torch.from_numpy(arr).unsqueeze(0)
 
-    pose_tensor = b64_to_tensor(pose_image_b64)
-    face_tensor = b64_to_tensor(face_image_b64, size=(224, 224))
+    pose_tensor = b64_to_tensor(pose_image_b64, label="pose_image")
+    face_tensor = b64_to_tensor(face_image_b64, label="face_image", size=(224, 224))
 
     # pose 이미지를 init_image로 인코딩
     vae_encoder = VAEEncode()
@@ -206,12 +217,16 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
         raise ImportError("No usable IPAdapter class found in IPAdapterPlus module")
     print(f"IPA txt2img using: {IPAdapterClass.__name__}", flush=True)
 
+    print(f"[ipadapter_txt2img] decoding face_image base64 (len={len(face_image_b64)})", flush=True)
     if ',' in face_image_b64:
         face_image_b64 = face_image_b64.split(',', 1)[1]
     face_b = face_image_b64.strip()
+    face_b = face_b.encode('ascii', errors='ignore').decode('ascii')
+    face_b += '=' * (-len(face_b) % 4)
     face_img = Image.open(BytesIO(base64.b64decode(face_b))).convert("RGB").resize((224, 224), Image.LANCZOS)
     face_arr = np.array(face_img).astype(np.float32) / 255.0
     face_tensor = torch.from_numpy(face_arr).unsqueeze(0)
+    print(f"[ipadapter_txt2img] face_image decoded OK: {face_img.size}", flush=True)
 
     clip_encoder = CLIPTextEncode()
     positive = clip_encoder.encode(loaded_clip, prompt)[0]
