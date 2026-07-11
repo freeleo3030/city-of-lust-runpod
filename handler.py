@@ -180,7 +180,9 @@ def ipadapter_img2img(prompt, negative_prompt, pose_image_b64, face_image_b64, w
         return decoder.decode(loaded_vae, sampled)[0]
     finally:
         import gc, torch
+        import comfy.model_management as mm
         del model_with_ipa
+        mm.cleanup_models()
         gc.collect()
         torch.cuda.empty_cache()
 
@@ -255,7 +257,9 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
         decoder = VAEDecode()
         result_image = decoder.decode(loaded_vae, sampled)[0]
     finally:
+        import comfy.model_management as mm
         del model_with_ipa
+        mm.cleanup_models()
         gc.collect()
         torch.cuda.empty_cache()
 
@@ -480,7 +484,9 @@ def handler(job):
 
         image_b64 = tensor_to_b64(image_tensor)
         import gc, torch
+        import comfy.model_management as mm
         del image_tensor
+        mm.cleanup_models()
         gc.collect()
         torch.cuda.empty_cache()
         log_vram("after generation")
