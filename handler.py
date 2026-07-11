@@ -9,6 +9,10 @@ print("handler.py starting...", flush=True)
 import os
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
 
+# ComfyUI --lowvram 강제: GPU VRAM을 레이어 단위로 스트리밍해서 누적 방지
+if '--lowvram' not in sys.argv:
+    sys.argv.append('--lowvram')
+
 sys.path.insert(0, '/comfyui')
 
 MODEL_PATH = "/comfyui/models/checkpoints/chilloutmix.safetensors"
