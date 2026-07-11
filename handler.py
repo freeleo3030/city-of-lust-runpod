@@ -182,7 +182,7 @@ def ipadapter_img2img(prompt, negative_prompt, pose_image_b64, face_image_b64, w
         import gc, torch
         import comfy.model_management as mm
         del model_with_ipa
-        mm.cleanup_models()
+        mm.unload_all_models()
         gc.collect()
         torch.cuda.empty_cache()
 
@@ -259,7 +259,7 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
     finally:
         import comfy.model_management as mm
         del model_with_ipa
-        mm.cleanup_models()
+        mm.unload_all_models()
         gc.collect()
         torch.cuda.empty_cache()
 
@@ -486,7 +486,7 @@ def handler(job):
         import gc, torch
         import comfy.model_management as mm
         del image_tensor
-        mm.cleanup_models()
+        mm.unload_all_models()
         gc.collect()
         torch.cuda.empty_cache()
         log_vram("after generation")
@@ -494,7 +494,9 @@ def handler(job):
 
     except Exception as e:
         import traceback, gc, torch
+        import comfy.model_management as mm
         print(traceback.format_exc(), flush=True)
+        mm.unload_all_models()
         gc.collect()
         torch.cuda.empty_cache()
         log_vram("after error")
