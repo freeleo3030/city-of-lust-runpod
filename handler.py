@@ -4,14 +4,15 @@ import random
 import sys
 import os
 
-print("handler.py starting...", flush=True)
+print("handler.py starting... V64", flush=True)
 
 import os
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
 
-# ComfyUI --lowvram 강제: GPU VRAM을 레이어 단위로 스트리밍해서 누적 방지
-if '--lowvram' not in sys.argv:
-    sys.argv.append('--lowvram')
+# ComfyUI --lowvram 강제 (sys.argv 방식 + 나중에 vram_state 직접 설정으로 이중 보장)
+for flag in ['--lowvram', '--disable-cuda-malloc']:
+    if flag not in sys.argv:
+        sys.argv.append(flag)
 
 sys.path.insert(0, '/comfyui')
 
@@ -31,18 +32,77 @@ loaded_vae = None
 loaded_controlnet = None
 
 
+def _force_vram_free():
+    """모든 GPU 메모리를 강제로 CPU로 이동 + 캐시 해제"""
+    import gc, torch
+    # ComfyUI model management를 통한 언로드
+    try:
+        import comfy.model_management as mm
+        loaded_count = len(mm.current_loaded_models)
+        print(f"[VRAM] current_loaded_models count: {loaded_count}", flush=True)
+        # 직접 순회하며 언로드
+        for lm in list(mm.current_loaded_models):
+            try:
+                lm.model_unload()
+            except Exception as e:
+                print(f"[VRAM] model_unload error: {e}", flush=True)
+        mm.current_loaded_models.clear()
+        print(f"[VRAM] current_loaded_models cleared", flush=True)
+    except Exception as e:
+        print(f"[VRAM] mm cleanup error: {e}", flush=True)
+
+    # globals를 직접 CPU로 이동 (ModelPatcher 구조 대응)
+    for gname, gobj in [
+        ('loaded_model', loaded_model), ('loaded_clip', loaded_clip),
+        ('loaded_vae', loaded_vae), ('loaded_ipadapter', loaded_ipadapter),
+        ('loaded_clip_vision', loaded_clip_vision),
+    ]:
+        if gobj is None:
+            continue
+        try:
+            # ModelPatcher: .model은 실제 nn.Module
+            inner = getattr(gobj, 'model', None)
+            if inner is not None and hasattr(inner, 'to'):
+                inner.to('cpu')
+                print(f"[VRAM] {gname}.model → cpu", flush=True)
+            elif hasattr(gobj, 'to'):
+                gobj.to('cpu')
+                print(f"[VRAM] {gname} → cpu", flush=True)
+        except Exception as e:
+            print(f"[VRAM] {gname} cpu move error: {e}", flush=True)
+
+    gc.collect()
+    torch.cuda.empty_cache()
+    log_vram("after _force_vram_free")
+
+
 def load_model():
     global loaded_model, loaded_clip, loaded_vae
     if loaded_model is not None:
         return
     print("Loading ComfyUI modules...", flush=True)
     from nodes import CheckpointLoaderSimple
+
+    # vram_state 직접 LOW_VRAM으로 설정 (sys.argv 방식 이중 보장)
+    try:
+        import comfy.model_management as mm
+        print(f"[V64] vram_state before override: {mm.vram_state}", flush=True)
+        mm.vram_state = mm.VRAMState.LOW_VRAM
+        print(f"[V64] vram_state after override: {mm.vram_state}", flush=True)
+    except Exception as e:
+        print(f"[V64] vram_state override failed: {e}", flush=True)
+
     if not os.path.exists(MODEL_PATH):
         raise RuntimeError(f"Model not found: {MODEL_PATH}")
+
+    model_size_gb = os.path.getsize(MODEL_PATH) / (1024 ** 3)
+    print(f"[V64] Model file size: {model_size_gb:.2f} GB ({MODEL_PATH})", flush=True)
+
     print(f"Loading model from {MODEL_PATH}...", flush=True)
     loader = CheckpointLoaderSimple()
     loaded_model, loaded_clip, loaded_vae = loader.load_checkpoint("chilloutmix.safetensors")
     print("Model loaded!", flush=True)
+    log_vram("after load_model")
 
 
 def load_controlnet():
@@ -183,12 +243,11 @@ def ipadapter_img2img(prompt, negative_prompt, pose_image_b64, face_image_b64, w
         decoder = VAEDecode()
         return decoder.decode(loaded_vae, sampled)[0]
     finally:
-        import gc, torch
-        import comfy.model_management as mm
-        del model_with_ipa
-        mm.unload_all_models()
-        gc.collect()
-        torch.cuda.empty_cache()
+        try:
+            del model_with_ipa
+        except Exception:
+            pass
+        _force_vram_free()
 
 
 def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, steps, cfg_scale, seed, ipa_strength=0.35):
@@ -261,11 +320,11 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
         decoder = VAEDecode()
         result_image = decoder.decode(loaded_vae, sampled)[0]
     finally:
-        import comfy.model_management as mm
-        del model_with_ipa
-        mm.unload_all_models()
-        gc.collect()
-        torch.cuda.empty_cache()
+        try:
+            del model_with_ipa
+        except Exception:
+            pass
+        _force_vram_free()
 
     return result_image
 
@@ -487,23 +546,17 @@ def handler(job):
             image_tensor = txt2img(prompt, negative_prompt, width, height, steps, cfg_scale, seed)
 
         image_b64 = tensor_to_b64(image_tensor)
-        import gc, torch
-        import comfy.model_management as mm
-        del image_tensor
-        mm.unload_all_models()
-        gc.collect()
-        torch.cuda.empty_cache()
-        log_vram("after generation")
+        try:
+            del image_tensor
+        except Exception:
+            pass
+        _force_vram_free()
         return {"image": image_b64, "status": "success"}
 
     except Exception as e:
-        import traceback, gc, torch
-        import comfy.model_management as mm
+        import traceback
         print(traceback.format_exc(), flush=True)
-        mm.unload_all_models()
-        gc.collect()
-        torch.cuda.empty_cache()
-        log_vram("after error")
+        _force_vram_free()
         return {"error": str(e), "status": "failed"}
 
 
