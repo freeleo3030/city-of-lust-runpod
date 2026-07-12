@@ -6,7 +6,7 @@ import os
 import gc
 import tracemalloc
 
-print("handler.py starting... V74", flush=True)
+print("handler.py starting... V75", flush=True)
 
 import os
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -63,54 +63,25 @@ loaded_controlnet = None
 
 
 def _force_vram_free():
-    """모든 GPU/RAM 메모리 강제 해제 — 가능한 모든 방법 동원"""
+    """VRAM 캐시만 정리 — ComfyUI 모델 추적 목록은 건드리지 않음"""
     import gc, torch
 
+    # V75: unload_all_models/clear 제거
+    # LOW_VRAM 모드에서 ComfyUI가 자동으로 모델을 CPU로 오프로드함.
+    # unload_all_models() + current_loaded_models.clear() 를 호출하면
+    # 다음 job에서 ComfyUI가 새 LoadedModel 래퍼를 생성 → 추적 tensor 누적.
     try:
         import comfy.model_management as mm
-
-        # 1. ComfyUI 공식 전체 언로드 함수
-        try:
-            mm.unload_all_models()
-            print(f"[VRAM] unload_all_models OK", flush=True)
-        except Exception as e:
-            print(f"[VRAM] unload_all_models error: {e}", flush=True)
-
-        # 2. current_loaded_models 수동 언로드 + clear
-        loaded_count = len(mm.current_loaded_models)
-        print(f"[VRAM] current_loaded_models count: {loaded_count}", flush=True)
-        for lm in list(mm.current_loaded_models):
-            try:
-                lm.model_unload()
-            except Exception as e:
-                print(f"[VRAM] model_unload error: {e}", flush=True)
-        mm.current_loaded_models.clear()
-        print(f"[VRAM] current_loaded_models cleared", flush=True)
-
-        # 3. VRAM 전체 강제 해제
-        try:
-            mm.free_memory(mm.get_total_memory(mm.get_torch_device()), mm.get_torch_device())
-            print(f"[VRAM] free_memory OK", flush=True)
-        except Exception as e:
-            print(f"[VRAM] free_memory error: {e}", flush=True)
-
-        # 4. soft_empty_cache
+        loaded = len(mm.current_loaded_models)
+        print(f"[VRAM] current_loaded_models: {loaded}개 (유지)", flush=True)
         try:
             mm.soft_empty_cache()
-            print(f"[VRAM] soft_empty_cache OK", flush=True)
         except Exception as e:
             print(f"[VRAM] soft_empty_cache error: {e}", flush=True)
-
     except Exception as e:
-        print(f"[VRAM] mm cleanup error: {e}", flush=True)
+        print(f"[VRAM] mm state error: {e}", flush=True)
 
-    # 5. GC + VRAM 캐시 완전 초기화
-    # V74: 글로벌 모델 참조는 유지 — None으로 만들면 다음 job에서 3.97GB 모델 재로드 + 고아 tensor 1677개 누적
     torch.cuda.synchronize()
-    for _ in range(3):
-        gc.collect()
-        torch.cuda.empty_cache()
-
     gc.collect()
     torch.cuda.empty_cache()
 
