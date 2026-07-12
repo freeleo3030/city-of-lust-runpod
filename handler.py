@@ -4,7 +4,7 @@ import random
 import sys
 import os
 
-print("handler.py starting... V68", flush=True)
+print("handler.py starting... V69", flush=True)
 
 import os
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -452,9 +452,11 @@ def tensor_to_b64(image_tensor):
 
 def log_vram(label=""):
     try:
-        import torch
+        import torch, psutil, os
         free, total = torch.cuda.mem_get_info()
-        print(f"[VRAM]{' ' + label if label else ''}: {free/1024**3:.1f}GB free / {total/1024**3:.1f}GB total", flush=True)
+        proc = psutil.Process(os.getpid())
+        ram_gb = proc.memory_info().rss / 1024**3
+        print(f"[VRAM]{' ' + label if label else ''}: {free/1024**3:.1f}GB free / {total/1024**3:.1f}GB total | RAM: {ram_gb:.2f}GB", flush=True)
     except Exception:
         pass
 

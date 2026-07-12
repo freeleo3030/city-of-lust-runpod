@@ -23,4 +23,4 @@ jobs:
           push: true
           tags: |
             freeleo3030/city-of-lust-runpod:latest
-            freeleo3030/city-of-lust-runpod:v68
+            freeleo3030/city-of-lust-runpod:v69
