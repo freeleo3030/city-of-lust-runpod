@@ -4,13 +4,13 @@ import random
 import sys
 import os
 
-print("handler.py starting... V70", flush=True)
+print("handler.py starting... V71", flush=True)
 
 import os
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
 
 # ComfyUI --lowvram 강제 (sys.argv 방식 + 나중에 vram_state 직접 설정으로 이중 보장)
-for flag in ['--lowvram', '--disable-cuda-malloc']:
+for flag in ['--lowvram', '--disable-cuda-malloc', '--disable-smart-memory']:
     if flag not in sys.argv:
         sys.argv.append(flag)
 
