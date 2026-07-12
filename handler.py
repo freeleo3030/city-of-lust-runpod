@@ -6,7 +6,7 @@ import os
 import gc
 import tracemalloc
 
-print("handler.py starting... V73", flush=True)
+print("handler.py starting... V74", flush=True)
 
 import os
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -104,32 +104,8 @@ def _force_vram_free():
     except Exception as e:
         print(f"[VRAM] mm cleanup error: {e}", flush=True)
 
-    # 5. 글로벌 참조 해제 → Python GC가 RAM 수거
-    global loaded_model, loaded_clip, loaded_vae, loaded_ipadapter, loaded_clip_vision, loaded_controlnet
-    for gname, gobj in [
-        ('loaded_model', loaded_model), ('loaded_clip', loaded_clip),
-        ('loaded_vae', loaded_vae), ('loaded_ipadapter', loaded_ipadapter),
-        ('loaded_clip_vision', loaded_clip_vision),
-    ]:
-        if gobj is None:
-            continue
-        try:
-            inner = getattr(gobj, 'model', None)
-            if inner is not None and hasattr(inner, 'to'):
-                inner.to('cpu')
-            elif hasattr(gobj, 'to'):
-                gobj.to('cpu')
-        except Exception as e:
-            print(f"[VRAM] {gname} cpu move error: {e}", flush=True)
-
-    loaded_model = None
-    loaded_clip = None
-    loaded_vae = None
-    loaded_ipadapter = None
-    loaded_clip_vision = None
-    loaded_controlnet = None
-
-    # 6. GC + VRAM 캐시 완전 초기화
+    # 5. GC + VRAM 캐시 완전 초기화
+    # V74: 글로벌 모델 참조는 유지 — None으로 만들면 다음 job에서 3.97GB 모델 재로드 + 고아 tensor 1677개 누적
     torch.cuda.synchronize()
     for _ in range(3):
         gc.collect()
