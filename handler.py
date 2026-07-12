@@ -4,7 +4,7 @@ import random
 import sys
 import os
 
-print("handler.py starting... V69", flush=True)
+print("handler.py starting... V70", flush=True)
 
 import os
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -73,6 +73,16 @@ def _force_vram_free():
     torch.cuda.synchronize()
     gc.collect()
     torch.cuda.empty_cache()
+
+    # 글로벌 참조 해제 → Python GC가 RAM 수거할 수 있게 (cpu이동만으론 RAM 해제 안 됨)
+    global loaded_model, loaded_clip, loaded_vae, loaded_ipadapter, loaded_clip_vision, loaded_controlnet
+    loaded_model = None
+    loaded_clip = None
+    loaded_vae = None
+    loaded_ipadapter = None
+    loaded_clip_vision = None
+    loaded_controlnet = None
+
     gc.collect()
     torch.cuda.empty_cache()
 
