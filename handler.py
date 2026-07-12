@@ -4,7 +4,7 @@ import random
 import sys
 import os
 
-print("handler.py starting... V64", flush=True)
+print("handler.py starting... V66", flush=True)
 
 import os
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -52,10 +52,10 @@ def _force_vram_free():
         print(f"[VRAM] mm cleanup error: {e}", flush=True)
 
     # globals를 직접 CPU로 이동 (ModelPatcher 구조 대응)
+    # loaded_clip_vision은 VRAM 상주 — 제외
     for gname, gobj in [
         ('loaded_model', loaded_model), ('loaded_clip', loaded_clip),
         ('loaded_vae', loaded_vae), ('loaded_ipadapter', loaded_ipadapter),
-        ('loaded_clip_vision', loaded_clip_vision),
     ]:
         if gobj is None:
             continue
@@ -73,6 +73,19 @@ def _force_vram_free():
 
     gc.collect()
     torch.cuda.empty_cache()
+
+    # CLIP Vision VRAM 복원 (상주 유지)
+    if loaded_clip_vision is not None:
+        try:
+            inner = getattr(loaded_clip_vision, 'model', None)
+            if inner is not None and hasattr(inner, 'to'):
+                inner.to('cuda')
+            elif hasattr(loaded_clip_vision, 'to'):
+                loaded_clip_vision.to('cuda')
+            print("[VRAM] loaded_clip_vision restored to cuda", flush=True)
+        except Exception as e:
+            print(f"[VRAM] clip_vision cuda restore error: {e}", flush=True)
+
     log_vram("after _force_vram_free")
 
 
@@ -103,6 +116,8 @@ def load_model():
     loaded_model, loaded_clip, loaded_vae = loader.load_checkpoint("chilloutmix.safetensors")
     print("Model loaded!", flush=True)
     log_vram("after load_model")
+    # CLIP Vision 미리 로드 — VRAM 상주로 OOM spike 방지
+    load_ipadapter()
 
 
 def load_controlnet():
