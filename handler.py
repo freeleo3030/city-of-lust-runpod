@@ -4,7 +4,7 @@ import random
 import sys
 import os
 
-print("handler.py starting... V66", flush=True)
+print("handler.py starting... V67", flush=True)
 
 import os
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -35,19 +35,29 @@ loaded_controlnet = None
 def _force_vram_free():
     """모든 GPU 메모리를 강제로 CPU로 이동 + 캐시 해제"""
     import gc, torch
-    # ComfyUI model management를 통한 언로드
+    # CLIP Vision inner model 참조 (ComfyUI 등록 유지 위해 필요)
+    clip_vision_inner = None
+    if loaded_clip_vision is not None:
+        clip_vision_inner = getattr(loaded_clip_vision, 'model', None)
+
+    # ComfyUI model management를 통한 언로드 — CLIP Vision 항목만 보존
     try:
         import comfy.model_management as mm
         loaded_count = len(mm.current_loaded_models)
         print(f"[VRAM] current_loaded_models count: {loaded_count}", flush=True)
-        # 직접 순회하며 언로드
+        clip_entries = []
         for lm in list(mm.current_loaded_models):
-            try:
-                lm.model_unload()
-            except Exception as e:
-                print(f"[VRAM] model_unload error: {e}", flush=True)
+            lm_model = getattr(lm, 'model', None)
+            if clip_vision_inner is not None and lm_model is clip_vision_inner:
+                clip_entries.append(lm)  # CLIP Vision은 보존
+            else:
+                try:
+                    lm.model_unload()
+                except Exception as e:
+                    print(f"[VRAM] model_unload error: {e}", flush=True)
         mm.current_loaded_models.clear()
-        print(f"[VRAM] current_loaded_models cleared", flush=True)
+        mm.current_loaded_models.extend(clip_entries)
+        print(f"[VRAM] current_loaded_models cleared (kept {len(clip_entries)} clip_vision)", flush=True)
     except Exception as e:
         print(f"[VRAM] mm cleanup error: {e}", flush=True)
 
@@ -60,7 +70,6 @@ def _force_vram_free():
         if gobj is None:
             continue
         try:
-            # ModelPatcher: .model은 실제 nn.Module
             inner = getattr(gobj, 'model', None)
             if inner is not None and hasattr(inner, 'to'):
                 inner.to('cpu')
@@ -71,10 +80,14 @@ def _force_vram_free():
         except Exception as e:
             print(f"[VRAM] {gname} cpu move error: {e}", flush=True)
 
+    # 단편화 해소: synchronize → gc → empty_cache 두 번
+    torch.cuda.synchronize()
+    gc.collect()
+    torch.cuda.empty_cache()
     gc.collect()
     torch.cuda.empty_cache()
 
-    # CLIP Vision VRAM 복원 (상주 유지)
+    # CLIP Vision VRAM 확인 (이미 cuda에 있어야 함)
     if loaded_clip_vision is not None:
         try:
             inner = getattr(loaded_clip_vision, 'model', None)
@@ -82,7 +95,7 @@ def _force_vram_free():
                 inner.to('cuda')
             elif hasattr(loaded_clip_vision, 'to'):
                 loaded_clip_vision.to('cuda')
-            print("[VRAM] loaded_clip_vision restored to cuda", flush=True)
+            print("[VRAM] loaded_clip_vision on cuda", flush=True)
         except Exception as e:
             print(f"[VRAM] clip_vision cuda restore error: {e}", flush=True)
 
