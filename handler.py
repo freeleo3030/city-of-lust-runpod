@@ -3,11 +3,15 @@ import base64
 import random
 import sys
 import os
+import gc
+import tracemalloc
 
-print("handler.py starting... V72", flush=True)
+print("handler.py starting... V73", flush=True)
 
 import os
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
+
+tracemalloc.start()
 
 # ComfyUI --lowvram 강제 (sys.argv 방식 + 나중에 vram_state 직접 설정으로 이중 보장)
 for flag in ['--lowvram', '--disable-cuda-malloc', '--disable-smart-memory']:
@@ -15,6 +19,32 @@ for flag in ['--lowvram', '--disable-cuda-malloc', '--disable-smart-memory']:
         sys.argv.append(flag)
 
 sys.path.insert(0, '/comfyui')
+
+# pinned memory 직접 패치 (--disable-smart-memory 효과 없을 경우 대비)
+def _patch_pinned_memory():
+    try:
+        import comfy.model_management as mm
+        # PIN_SHARED_MEMORY 변수 비활성화
+        if hasattr(mm, 'PIN_SHARED_MEMORY'):
+            old = mm.PIN_SHARED_MEMORY
+            mm.PIN_SHARED_MEMORY = False
+            print(f"[PATCH] PIN_SHARED_MEMORY: {old} → False", flush=True)
+        else:
+            print("[PATCH] PIN_SHARED_MEMORY attribute not found", flush=True)
+        # pin_memory 함수 no-op으로 대체
+        if hasattr(mm, 'pin_memory'):
+            mm.pin_memory = lambda tensor: tensor
+            print("[PATCH] pin_memory → no-op", flush=True)
+        else:
+            print("[PATCH] pin_memory function not found", flush=True)
+        # should_use_fp16 등 메모리 관련 내부 상태 출력
+        for attr in ['current_loaded_models', 'loaded_models_ram', 'vram_state', 'total_vram']:
+            if hasattr(mm, attr):
+                print(f"[PATCH] mm.{attr} = {getattr(mm, attr)}", flush=True)
+    except Exception as e:
+        print(f"[PATCH] patch failed: {e}", flush=True)
+
+_patch_pinned_memory()
 
 MODEL_PATH = "/comfyui/models/checkpoints/chilloutmix.safetensors"
 CN_PATH = "/comfyui/models/controlnet/control_v11p_sd15_openpose.safetensors"
@@ -278,12 +308,17 @@ def ipadapter_img2img(prompt, negative_prompt, pose_image_b64, face_image_b64, w
         )[0]
 
         decoder = VAEDecode()
-        return decoder.decode(loaded_vae, sampled)[0]
+        result_img = decoder.decode(loaded_vae, sampled)[0]
+        return result_img
     finally:
-        try:
-            del model_with_ipa
-        except Exception:
-            pass
+        for _var in ['model_with_ipa', 'positive', 'negative_cond', 'latent',
+                     'sampled', 'pose_tensor', 'face_tensor', 'ipa_node']:
+            try:
+                if _var in dir():
+                    del _var
+            except Exception:
+                pass
+        gc.collect()
         _force_vram_free()
 
 
@@ -356,14 +391,17 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
 
         decoder = VAEDecode()
         result_image = decoder.decode(loaded_vae, sampled)[0]
+        return result_image
     finally:
-        try:
-            del model_with_ipa
-        except Exception:
-            pass
+        for _var in ['model_with_ipa', 'positive', 'negative_cond', 'latent',
+                     'sampled', 'face_tensor', 'ipa_node']:
+            try:
+                if _var in dir():
+                    del _var
+            except Exception:
+                pass
+        gc.collect()
         _force_vram_free()
-
-    return result_image
 
 
 def txt2img(prompt, negative_prompt, width, height, steps, cfg_scale, seed):
@@ -384,7 +422,10 @@ def txt2img(prompt, negative_prompt, width, height, steps, cfg_scale, seed):
     )[0]
 
     decoder = VAEDecode()
-    return decoder.decode(loaded_vae, sampled)[0]
+    result = decoder.decode(loaded_vae, sampled)[0]
+    del positive, negative, latent, sampled
+    gc.collect()
+    return result
 
 
 def img2img(prompt, negative_prompt, init_image_b64, denoising_strength, width, height, steps, cfg_scale, seed):
@@ -493,6 +534,40 @@ def log_vram(label=""):
         pass
 
 
+def log_mem_detail(label=""):
+    """상세 메모리 진단 — tensor 수/크기, tracemalloc top5, mm 상태"""
+    try:
+        import torch
+        # 1. tensor 개수 + 총 크기
+        tensors = [o for o in gc.get_objects() if isinstance(o, torch.Tensor)]
+        cpu_t = [t for t in tensors if not t.is_cuda]
+        gpu_t = [t for t in tensors if t.is_cuda]
+        cpu_gb = sum(t.element_size() * t.nelement() for t in cpu_t) / 1024**3
+        gpu_gb = sum(t.element_size() * t.nelement() for t in gpu_t) / 1024**3
+        print(f"[MEM-{label}] Tensors CPU: {len(cpu_t)}개 {cpu_gb:.2f}GB | GPU: {len(gpu_t)}개 {gpu_gb:.2f}GB", flush=True)
+    except Exception as e:
+        print(f"[MEM-{label}] tensor scan error: {e}", flush=True)
+
+    try:
+        # 2. tracemalloc top5 — 어느 라인에서 RAM 많이 쓰는지
+        snapshot = tracemalloc.take_snapshot()
+        for i, stat in enumerate(snapshot.statistics('lineno')[:5]):
+            print(f"[MEM-{label}] top{i+1}: {stat}", flush=True)
+    except Exception as e:
+        print(f"[MEM-{label}] tracemalloc error: {e}", flush=True)
+
+    try:
+        # 3. ComfyUI current_loaded_models 상태
+        import comfy.model_management as mm
+        loaded = mm.current_loaded_models
+        print(f"[MEM-{label}] mm.current_loaded_models: {len(loaded)}개", flush=True)
+        for i, lm in enumerate(loaded):
+            model_name = getattr(getattr(lm, 'model', None), '__class__', type(lm)).__name__
+            print(f"[MEM-{label}]   [{i}] {model_name}", flush=True)
+    except Exception as e:
+        print(f"[MEM-{label}] mm state error: {e}", flush=True)
+
+
 def handler(job):
     try:
         inp = job["input"]
@@ -509,6 +584,7 @@ def handler(job):
 
         load_model()
         log_vram("before generation")
+        log_mem_detail("before")
 
         print(f"Mode={mode}, {width}x{height}, steps={steps}, seed={seed}", flush=True)
 
@@ -590,6 +666,7 @@ def handler(job):
         except Exception:
             pass
         _force_vram_free()
+        log_mem_detail("after")
         return {"image": image_b64, "status": "success"}
 
     except Exception as e:
