@@ -21,7 +21,7 @@ CN_PATH = "/comfyui/models/controlnet/control_v11p_sd15_openpose.safetensors"
 CN_PATH_FALLBACK = "/comfyui/models/controlnet/control_v11p_sd15_openpose.pth"
 IPA_PATH = "/comfyui/models/ipadapter/ip-adapter-plus-face_sd15.safetensors"
 IPA_PATH_FALLBACK = "/comfyui/models/ipadapter/ip-adapter-plus-face_sd15.bin"
-CLIP_PATH = "/comfyui/models/clip_vision/clip-vit-large-patch14.bin"
+CLIP_PATH = "/comfyui/models/clip_vision/clip-vit-h-14.safetensors"  # ViT-H: ip-adapter-plus-face_sd15와 매칭
 
 loaded_ipadapter = None
 loaded_clip_vision = None
@@ -143,7 +143,7 @@ def load_ipadapter():
         loader = IPAdapterModelLoader()
         loaded_ipadapter = loader.load_ipadapter_model(ipa_filename)[0]
         clip_loader = CLIPVisionLoader()
-        loaded_clip_vision = clip_loader.load_clip("clip-vit-large-patch14.bin")[0]
+        loaded_clip_vision = clip_loader.load_clip("clip-vit-h-14.safetensors")[0]
         print("IP-Adapter loaded!", flush=True)
         return True
     except Exception as e:

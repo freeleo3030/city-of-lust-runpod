@@ -33,9 +33,21 @@ elif [ -f "${VOLUME_DIR}/ip-adapter-plus-face_sd15.bin" ]; then
     ln -sf "${VOLUME_DIR}/ip-adapter-plus-face_sd15.bin" "${IPA_DIR}/ip-adapter-plus-face_sd15.bin"
     echo "IP-Adapter model linked (bin)."
 fi
+# ViT-H (1280-dim) — ip-adapter-plus-face_sd15와 매칭
+CLIP_H_PATH="${VOLUME_DIR}/clip-vit-h-14.safetensors"
+if [ ! -f "${CLIP_H_PATH}" ]; then
+    echo "Downloading CLIP ViT-H-14 (~2.5GB)..."
+    wget -q --show-progress \
+        "https://huggingface.co/h94/IP-Adapter/resolve/main/models/image_encoder/model.safetensors" \
+        -O "${CLIP_H_PATH}"
+    echo "CLIP ViT-H-14 download done."
+fi
+ln -sf "${CLIP_H_PATH}" "${CLIP_DIR}/clip-vit-h-14.safetensors"
+echo "CLIP Vision (ViT-H-14) linked."
+
+# 구버전 ViT-L 링크도 유지 (fallback용)
 if [ -f "${VOLUME_DIR}/clip-vit-large-patch14.bin" ]; then
     ln -sf "${VOLUME_DIR}/clip-vit-large-patch14.bin" "${CLIP_DIR}/clip-vit-large-patch14.bin"
-    echo "CLIP Vision model linked."
 fi
 
 echo "Starting handler..."
