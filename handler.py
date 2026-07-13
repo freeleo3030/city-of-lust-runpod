@@ -6,7 +6,7 @@ import os
 import gc
 import tracemalloc
 
-print("handler.py starting... V81", flush=True)
+print("handler.py starting... V82", flush=True)
 
 import os
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -289,6 +289,20 @@ def ipadapter_img2img(prompt, negative_prompt, pose_image_b64, face_image_b64, w
         except Exception as e:
             print(f"[V81] clear error: {e}", flush=True)
 
+        # V82: 원본 loaded_model에 누적된 patches/transformer_options 클리어
+        try:
+            lm_p = getattr(loaded_model, 'patches', None)
+            lm_to = (getattr(loaded_model, 'model_options', {}) or {}).get('transformer_options', {})
+            n_p = len(lm_p) if lm_p else 0
+            n_to = len(lm_to) if lm_to else 0
+            print(f"[V82] loaded_model patches={n_p} transformer_options={n_to}", flush=True)
+            if n_p > 0:
+                lm_p.clear()
+            if n_to > 0:
+                lm_to.clear()
+        except Exception as e:
+            print(f"[V82] loaded_model cleanup error: {e}", flush=True)
+
         del model_with_ipa, positive, negative_cond, latent, ipa_node
         try:
             del sampled
@@ -403,6 +417,20 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
         except Exception as e:
             print(f"[V81] clear error: {e}", flush=True)
 
+        # V82: 원본 loaded_model에 누적된 patches/transformer_options 클리어
+        try:
+            lm_p = getattr(loaded_model, 'patches', None)
+            lm_to = (getattr(loaded_model, 'model_options', {}) or {}).get('transformer_options', {})
+            n_p = len(lm_p) if lm_p else 0
+            n_to = len(lm_to) if lm_to else 0
+            print(f"[V82] loaded_model patches={n_p} transformer_options={n_to}", flush=True)
+            if n_p > 0:
+                lm_p.clear()
+            if n_to > 0:
+                lm_to.clear()
+        except Exception as e:
+            print(f"[V82] loaded_model cleanup error: {e}", flush=True)
+
         del model_with_ipa, positive, negative_cond, latent, ipa_node
         try:
             del sampled
@@ -413,7 +441,7 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
 
         try:
             cpu_t = [o for o in gc.get_objects() if isinstance(o, torch.Tensor) and not o.is_cuda]
-            print(f"[V81] CPU tensors after del+collect: {len(cpu_t)}개 {sum(t.element_size()*t.nelement() for t in cpu_t)/1024**3:.2f}GB", flush=True)
+            print(f"[V82] CPU tensors after del+collect: {len(cpu_t)}개 {sum(t.element_size()*t.nelement() for t in cpu_t)/1024**3:.2f}GB", flush=True)
         except Exception:
             pass
 
