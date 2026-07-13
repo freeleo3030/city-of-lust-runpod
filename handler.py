@@ -6,7 +6,7 @@ import os
 import gc
 import tracemalloc
 
-print("handler.py starting... V76", flush=True)
+print("handler.py starting... V77", flush=True)
 
 import os
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -333,6 +333,30 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
     latent_creator = EmptyLatentImage()
     latent = latent_creator.generate(width, height, 1)[0]
 
+    # V77 진단: apply_ipadapter 직전 스냅샷
+    def _diag_snapshot(label):
+        try:
+            cpu_t = [o for o in gc.get_objects() if isinstance(o, torch.Tensor) and not o.is_cuda]
+            print(f"[DIAG-{label}] CPU tensors: {len(cpu_t)}개 {sum(t.element_size()*t.nelement() for t in cpu_t)/1024**3:.2f}GB", flush=True)
+            # loaded_model.model_patches 크기
+            if hasattr(loaded_model, 'patches'):
+                print(f"[DIAG-{label}] loaded_model.patches keys: {len(loaded_model.patches)} → {list(loaded_model.patches.keys())[:5]}", flush=True)
+            # loaded_ipadapter 내부 tensor 수
+            if loaded_ipadapter is not None:
+                ipa_tensors = [o for o in gc.get_objects() if isinstance(o, torch.Tensor) and not o.is_cuda
+                               and any(o.data_ptr() == t.data_ptr() for t in
+                                       [v for v in vars(loaded_ipadapter).values() if isinstance(v, torch.Tensor)]
+                                       ) if hasattr(loaded_ipadapter, '__dict__') else False]
+            # loaded_clip_vision 내부 상태
+            if hasattr(loaded_clip_vision, 'model') and hasattr(loaded_clip_vision.model, '_buffers'):
+                print(f"[DIAG-{label}] clip_vision buffers: {len(loaded_clip_vision.model._buffers)}", flush=True)
+            return {id(o) for o in gc.get_objects() if isinstance(o, torch.Tensor) and not o.is_cuda}
+        except Exception as e:
+            print(f"[DIAG-{label}] error: {e}", flush=True)
+            return set()
+
+    snap_before_ipa = _diag_snapshot("before-ipa")
+
     ipa_node = IPAdapterClass()
     result = ipa_node.apply_ipadapter(
         model=loaded_model, ipadapter=loaded_ipadapter,
@@ -343,13 +367,45 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
     model_with_ipa = result[0]
     del result
 
+    # V77 진단: apply_ipadapter 직후 — 여기서 늘었으면 IPA 자체가 원인
+    snap_after_ipa = _diag_snapshot("after-ipa")
+    new_after_ipa = snap_after_ipa - snap_before_ipa
+    print(f"[DIAG] apply_ipadapter로 새로 생긴 CPU tensor: {len(new_after_ipa)}개", flush=True)
+    # 새 tensor 중 첫 3개의 referrers 출력
+    try:
+        new_tensor_objs = [o for o in gc.get_objects()
+                           if isinstance(o, torch.Tensor) and not o.is_cuda and id(o) in new_after_ipa]
+        for i, t in enumerate(new_tensor_objs[:3]):
+            refs = gc.get_referrers(t)
+            ref_info = []
+            for r in refs:
+                if isinstance(r, dict):
+                    # 어느 객체의 __dict__인지 찾기
+                    owners = [o for o in gc.get_referrers(r) if hasattr(o, '__dict__') and o.__dict__ is r]
+                    ref_info.append(f"dict(owner={[type(o).__name__ for o in owners[:2]]})")
+                elif isinstance(r, list):
+                    ref_info.append(f"list(len={len(r)})")
+                else:
+                    ref_info.append(type(r).__name__)
+            print(f"[DIAG] new_tensor[{i}] shape={t.shape} dtype={t.dtype} referrers={ref_info[:4]}", flush=True)
+    except Exception as e:
+        print(f"[DIAG] referrer scan error: {e}", flush=True)
+
     try:
         sampler = KSampler()
+
+        snap_before_sample = _diag_snapshot("before-sample")
+
         sampled = sampler.sample(
             model_with_ipa, seed, steps, cfg_scale,
             "euler_ancestral", "karras",
             positive, negative_cond, latent, denoise=1.0
         )[0]
+
+        # V77 진단: sample 직후 — 여기서 늘었으면 KSampler가 원인
+        snap_after_sample = _diag_snapshot("after-sample")
+        new_after_sample = snap_after_sample - snap_before_sample
+        print(f"[DIAG] KSampler.sample로 새로 생긴 CPU tensor: {len(new_after_sample)}개", flush=True)
 
         decoder = VAEDecode()
         result_image = decoder.decode(loaded_vae, sampled)[0]
@@ -357,6 +413,15 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
     finally:
         # V76: model_with_ipa가 current_loaded_models에 남아있으면 제거
         # (apply_ipadapter가 loaded_model.clone()을 mm에 등록할 수 있음)
+        # V77 진단: del 전 loaded_model.patches 상태
+        try:
+            if hasattr(loaded_model, 'patches'):
+                print(f"[DIAG-finally] loaded_model.patches: {len(loaded_model.patches)} keys → {list(loaded_model.patches.keys())[:8]}", flush=True)
+            if hasattr(model_with_ipa, 'patches'):
+                print(f"[DIAG-finally] model_with_ipa.patches: {len(model_with_ipa.patches)} keys → {list(model_with_ipa.patches.keys())[:8]}", flush=True)
+        except Exception as e:
+            print(f"[DIAG-finally] patches check error: {e}", flush=True)
+
         try:
             import comfy.model_management as mm
             before = len(mm.current_loaded_models)
@@ -378,6 +443,14 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
             pass
         del face_tensor
         gc.collect()
+
+        # V77 진단: gc.collect() 후 — del + collect로 얼마나 줄었는지
+        try:
+            cpu_t = [o for o in gc.get_objects() if isinstance(o, torch.Tensor) and not o.is_cuda]
+            print(f"[DIAG-after-del] CPU tensors after del+collect: {len(cpu_t)}개 {sum(t.element_size()*t.nelement() for t in cpu_t)/1024**3:.2f}GB", flush=True)
+        except Exception as e:
+            print(f"[DIAG-after-del] error: {e}", flush=True)
+
         _force_vram_free()
 
 
