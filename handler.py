@@ -6,7 +6,7 @@ import os
 import gc
 import tracemalloc
 
-print("handler.py starting... V79", flush=True)
+print("handler.py starting... V80", flush=True)
 
 import os
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -400,33 +400,41 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
                 else:
                     ref_info.append(type(r).__name__)
             print(f"[DIAG] new_tensor[{i}] shape={t.shape} dtype={t.dtype} referrers={ref_info[:4]}", flush=True)
-        # list(1160) 소유자 2단계 추적
+        # V80: cell 소유자 추적 — list(1160)을 캡처한 closure 함수 찾기
         if new_tensor_objs:
             try:
                 first_t = new_tensor_objs[0]
                 for r in gc.get_referrers(first_t):
                     if isinstance(r, list) and len(r) >= 100:
-                        # list(1160) 찾음 — 이것의 소유자 추적
-                        big_refs = gc.get_referrers(r)
-                        for br in big_refs[:5]:
-                            if isinstance(br, list):
-                                small_refs = gc.get_referrers(br)
-                                for sr in small_refs[:3]:
-                                    if isinstance(sr, dict):
-                                        owners = [o for o in gc.get_referrers(sr) if hasattr(o, '__dict__') and o.__dict__ is sr]
-                                        print(f"[DIAG-V79] list({len(r)})→list({len(br)})→dict(owner={[type(o).__name__ for o in owners[:2]]})", flush=True)
-                                    elif isinstance(sr, list):
-                                        print(f"[DIAG-V79] list({len(r)})→list({len(br)})→list({len(sr)})", flush=True)
-                                    else:
-                                        print(f"[DIAG-V79] list({len(r)})→list({len(br)})→{type(sr).__name__}", flush=True)
-                            elif isinstance(br, dict):
-                                owners = [o for o in gc.get_referrers(br) if hasattr(o, '__dict__') and o.__dict__ is br]
-                                print(f"[DIAG-V79] list({len(r)})→dict(owner={[type(o).__name__ for o in owners[:2]]})", flush=True)
-                            else:
-                                print(f"[DIAG-V79] list({len(r)})→{type(br).__name__}", flush=True)
+                        big_list = r
+                        for br in gc.get_referrers(big_list):
+                            if type(br).__name__ == 'cell':
+                                # cell을 소유한 function 찾기
+                                fn_list = [o for o in gc.get_referrers(br) if callable(o) and hasattr(o, '__code__')]
+                                for fn in fn_list[:3]:
+                                    code = fn.__code__
+                                    fn_holders = gc.get_referrers(fn)
+                                    holder_info = []
+                                    for h in fn_holders[:5]:
+                                        if isinstance(h, dict):
+                                            owners2 = [o for o in gc.get_referrers(h) if hasattr(o, '__dict__') and o.__dict__ is h]
+                                            holder_info.append(f"dict(owner={[type(o).__name__ for o in owners2[:2]]})")
+                                        elif isinstance(h, list):
+                                            holder_info.append(f"list({len(h)})")
+                                        else:
+                                            holder_info.append(type(h).__name__)
+                                    print(f"[DIAG-V80] cell→fn {code.co_qualname} @ {code.co_filename.split('/')[-1]}:{code.co_firstlineno} holders={holder_info[:4]}", flush=True)
+                                break
                         break
             except Exception as e:
-                print(f"[DIAG-V79] deep referrer error: {e}", flush=True)
+                print(f"[DIAG-V80] cell scan error: {e}", flush=True)
+        # model_with_ipa 속성 목록 출력 (patches_replace, object_patches 등)
+        try:
+            if 'model_with_ipa' in dir():
+                attrs = {k: type(v).__name__ for k, v in vars(model_with_ipa).items() if k.startswith('p') or k in ('object_patches', 'model_options')}
+                print(f"[DIAG-V80] model_with_ipa attrs: {attrs}", flush=True)
+        except Exception as e:
+            print(f"[DIAG-V80] model_with_ipa attrs error: {e}", flush=True)
     except Exception as e:
         print(f"[DIAG] referrer scan error: {e}", flush=True)
 
@@ -455,9 +463,14 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
         # V77 진단: del 전 loaded_model.patches 상태
         try:
             if hasattr(loaded_model, 'patches'):
-                print(f"[DIAG-finally] loaded_model.patches: {len(loaded_model.patches)} keys → {list(loaded_model.patches.keys())[:8]}", flush=True)
-            if hasattr(model_with_ipa, 'patches'):
-                print(f"[DIAG-finally] model_with_ipa.patches: {len(model_with_ipa.patches)} keys → {list(model_with_ipa.patches.keys())[:8]}", flush=True)
+                print(f"[DIAG-finally] loaded_model.patches: {len(loaded_model.patches)} keys", flush=True)
+            for attr in ('patches_replace', 'object_patches', 'extra_preserved_attrs'):
+                v = getattr(model_with_ipa, attr, None)
+                if v:
+                    print(f"[DIAG-finally] model_with_ipa.{attr}: {type(v).__name__} len={len(v)}", flush=True)
+                    if isinstance(v, dict):
+                        for k2, v2 in list(v.items())[:5]:
+                            print(f"[DIAG-finally]   [{k2}] → {type(v2).__name__}", flush=True)
         except Exception as e:
             print(f"[DIAG-finally] patches check error: {e}", flush=True)
 
