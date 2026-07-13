@@ -303,6 +303,32 @@ def ipadapter_img2img(prompt, negative_prompt, pose_image_b64, face_image_b64, w
         except Exception as e:
             print(f"[V82] loaded_model cleanup error: {e}", flush=True)
 
+        # V83: loaded_clip_vision patches/transformer_options 조사 + 클리어
+        try:
+            cv_p = getattr(loaded_clip_vision, 'patches', None)
+            cv_to = (getattr(loaded_clip_vision, 'model_options', {}) or {}).get('transformer_options', {})
+            n_cvp = len(cv_p) if cv_p else 0
+            n_cvto = len(cv_to) if cv_to else 0
+            print(f"[V83] loaded_clip_vision patches={n_cvp} transformer_options={n_cvto}", flush=True)
+            if n_cvp > 0:
+                cv_p.clear()
+            if n_cvto > 0:
+                cv_to.clear()
+        except Exception as e:
+            print(f"[V83] clip_vision cleanup error: {e}", flush=True)
+
+        # V83: loaded_ipadapter 내부 구조 로깅
+        try:
+            if isinstance(loaded_ipadapter, dict):
+                ipa_keys = list(loaded_ipadapter.keys())
+                print(f"[V83] loaded_ipadapter keys={ipa_keys}", flush=True)
+            else:
+                ipa_p = getattr(loaded_ipadapter, 'patches', None)
+                n_ipap = len(ipa_p) if ipa_p else 0
+                print(f"[V83] loaded_ipadapter type={type(loaded_ipadapter).__name__} patches={n_ipap}", flush=True)
+        except Exception as e:
+            print(f"[V83] ipadapter inspect error: {e}", flush=True)
+
         del model_with_ipa, positive, negative_cond, latent, ipa_node
         try:
             del sampled
@@ -430,6 +456,32 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
                 lm_to.clear()
         except Exception as e:
             print(f"[V82] loaded_model cleanup error: {e}", flush=True)
+
+        # V83: loaded_clip_vision patches/transformer_options 조사 + 클리어
+        try:
+            cv_p = getattr(loaded_clip_vision, 'patches', None)
+            cv_to = (getattr(loaded_clip_vision, 'model_options', {}) or {}).get('transformer_options', {})
+            n_cvp = len(cv_p) if cv_p else 0
+            n_cvto = len(cv_to) if cv_to else 0
+            print(f"[V83] loaded_clip_vision patches={n_cvp} transformer_options={n_cvto}", flush=True)
+            if n_cvp > 0:
+                cv_p.clear()
+            if n_cvto > 0:
+                cv_to.clear()
+        except Exception as e:
+            print(f"[V83] clip_vision cleanup error: {e}", flush=True)
+
+        # V83: loaded_ipadapter 내부 구조 로깅
+        try:
+            if isinstance(loaded_ipadapter, dict):
+                ipa_keys = list(loaded_ipadapter.keys())
+                print(f"[V83] loaded_ipadapter keys={ipa_keys}", flush=True)
+            else:
+                ipa_p = getattr(loaded_ipadapter, 'patches', None)
+                n_ipap = len(ipa_p) if ipa_p else 0
+                print(f"[V83] loaded_ipadapter type={type(loaded_ipadapter).__name__} patches={n_ipap}", flush=True)
+        except Exception as e:
+            print(f"[V83] ipadapter inspect error: {e}", flush=True)
 
         del model_with_ipa, positive, negative_cond, latent, ipa_node
         try:
