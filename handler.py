@@ -6,7 +6,7 @@ import os
 import gc
 import tracemalloc
 
-print("handler.py starting... V77", flush=True)
+print("handler.py starting... V78", flush=True)
 
 import os
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -333,27 +333,34 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
     latent_creator = EmptyLatentImage()
     latent = latent_creator.generate(width, height, 1)[0]
 
-    # V77 진단: apply_ipadapter 직전 스냅샷
+    # V77 진단: tensor 스냅샷 + 주요 전역 객체 상태 출력
     def _diag_snapshot(label):
         try:
             cpu_t = [o for o in gc.get_objects() if isinstance(o, torch.Tensor) and not o.is_cuda]
-            print(f"[DIAG-{label}] CPU tensors: {len(cpu_t)}개 {sum(t.element_size()*t.nelement() for t in cpu_t)/1024**3:.2f}GB", flush=True)
-            # loaded_model.model_patches 크기
-            if hasattr(loaded_model, 'patches'):
-                print(f"[DIAG-{label}] loaded_model.patches keys: {len(loaded_model.patches)} → {list(loaded_model.patches.keys())[:5]}", flush=True)
-            # loaded_ipadapter 내부 tensor 수
-            if loaded_ipadapter is not None:
-                ipa_tensors = [o for o in gc.get_objects() if isinstance(o, torch.Tensor) and not o.is_cuda
-                               and any(o.data_ptr() == t.data_ptr() for t in
-                                       [v for v in vars(loaded_ipadapter).values() if isinstance(v, torch.Tensor)]
-                                       ) if hasattr(loaded_ipadapter, '__dict__') else False]
-            # loaded_clip_vision 내부 상태
-            if hasattr(loaded_clip_vision, 'model') and hasattr(loaded_clip_vision.model, '_buffers'):
-                print(f"[DIAG-{label}] clip_vision buffers: {len(loaded_clip_vision.model._buffers)}", flush=True)
-            return {id(o) for o in gc.get_objects() if isinstance(o, torch.Tensor) and not o.is_cuda}
+            gb = sum(t.element_size() * t.nelement() for t in cpu_t) / 1024**3
+            print(f"[DIAG-{label}] CPU tensors: {len(cpu_t)}개 {gb:.2f}GB", flush=True)
         except Exception as e:
-            print(f"[DIAG-{label}] error: {e}", flush=True)
+            print(f"[DIAG-{label}] tensor scan error: {e}", flush=True)
             return set()
+        try:
+            if hasattr(loaded_model, 'patches'):
+                print(f"[DIAG-{label}] loaded_model.patches: {len(loaded_model.patches)} keys → {list(loaded_model.patches.keys())[:6]}", flush=True)
+        except Exception as e:
+            print(f"[DIAG-{label}] patches error: {e}", flush=True)
+        try:
+            if loaded_ipadapter is not None and hasattr(loaded_ipadapter, '__dict__'):
+                ipa_t_count = sum(1 for v in vars(loaded_ipadapter).values() if isinstance(v, torch.Tensor))
+                print(f"[DIAG-{label}] loaded_ipadapter tensor attrs: {ipa_t_count}", flush=True)
+        except Exception as e:
+            print(f"[DIAG-{label}] ipadapter error: {e}", flush=True)
+        try:
+            if loaded_clip_vision is not None and hasattr(loaded_clip_vision, 'model'):
+                cv_model = loaded_clip_vision.model
+                buf_count = len(cv_model._buffers) if hasattr(cv_model, '_buffers') else -1
+                print(f"[DIAG-{label}] clip_vision._buffers: {buf_count}", flush=True)
+        except Exception as e:
+            print(f"[DIAG-{label}] clip_vision error: {e}", flush=True)
+        return {id(o) for o in gc.get_objects() if isinstance(o, torch.Tensor) and not o.is_cuda}
 
     snap_before_ipa = _diag_snapshot("before-ipa")
 
