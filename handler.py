@@ -6,7 +6,7 @@ import os
 import gc
 import tracemalloc
 
-print("handler.py starting... V75", flush=True)
+print("handler.py starting... V76", flush=True)
 
 import os
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -245,6 +245,7 @@ def ipadapter_img2img(prompt, negative_prompt, pose_image_b64, face_image_b64, w
         start_at=0.0, end_at=1.0
     )
     model_with_ipa = result[0]
+    del result
 
     try:
         sampler = KSampler()
@@ -258,13 +259,26 @@ def ipadapter_img2img(prompt, negative_prompt, pose_image_b64, face_image_b64, w
         result_img = decoder.decode(loaded_vae, sampled)[0]
         return result_img
     finally:
-        for _var in ['model_with_ipa', 'positive', 'negative_cond', 'latent',
-                     'sampled', 'pose_tensor', 'face_tensor', 'ipa_node']:
-            try:
-                if _var in dir():
-                    del _var
-            except Exception:
-                pass
+        try:
+            import comfy.model_management as mm
+            before = len(mm.current_loaded_models)
+            mm.current_loaded_models[:] = [
+                lm for lm in mm.current_loaded_models
+                if getattr(lm, 'model', None) is not model_with_ipa
+                and lm is not model_with_ipa
+            ]
+            after = len(mm.current_loaded_models)
+            if before != after:
+                print(f"[V76] removed model_with_ipa from current_loaded_models: {before}→{after}", flush=True)
+        except Exception as e:
+            print(f"[V76] cleanup error: {e}", flush=True)
+
+        del model_with_ipa, positive, negative_cond, latent, ipa_node
+        try:
+            del sampled
+        except Exception:
+            pass
+        del pose_tensor, face_tensor
         gc.collect()
         _force_vram_free()
 
@@ -327,6 +341,7 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
         start_at=0.0, end_at=1.0
     )
     model_with_ipa = result[0]
+    del result
 
     try:
         sampler = KSampler()
@@ -340,13 +355,28 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
         result_image = decoder.decode(loaded_vae, sampled)[0]
         return result_image
     finally:
-        for _var in ['model_with_ipa', 'positive', 'negative_cond', 'latent',
-                     'sampled', 'face_tensor', 'ipa_node']:
-            try:
-                if _var in dir():
-                    del _var
-            except Exception:
-                pass
+        # V76: model_with_ipa가 current_loaded_models에 남아있으면 제거
+        # (apply_ipadapter가 loaded_model.clone()을 mm에 등록할 수 있음)
+        try:
+            import comfy.model_management as mm
+            before = len(mm.current_loaded_models)
+            mm.current_loaded_models[:] = [
+                lm for lm in mm.current_loaded_models
+                if getattr(lm, 'model', None) is not model_with_ipa
+                and lm is not model_with_ipa
+            ]
+            after = len(mm.current_loaded_models)
+            if before != after:
+                print(f"[V76] removed model_with_ipa from current_loaded_models: {before}→{after}", flush=True)
+        except Exception as e:
+            print(f"[V76] cleanup error: {e}", flush=True)
+
+        del model_with_ipa, positive, negative_cond, latent, ipa_node
+        try:
+            del sampled
+        except Exception:
+            pass
+        del face_tensor
         gc.collect()
         _force_vram_free()
 
