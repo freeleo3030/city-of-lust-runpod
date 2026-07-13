@@ -6,7 +6,7 @@ import os
 import gc
 import tracemalloc
 
-print("handler.py starting... V78", flush=True)
+print("handler.py starting... V79", flush=True)
 
 import os
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -360,6 +360,12 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
                 print(f"[DIAG-{label}] clip_vision._buffers: {buf_count}", flush=True)
         except Exception as e:
             print(f"[DIAG-{label}] clip_vision error: {e}", flush=True)
+        try:
+            if hasattr(loaded_model, 'model_options') and isinstance(loaded_model.model_options, dict):
+                to = loaded_model.model_options.get('transformer_options', {})
+                print(f"[DIAG-{label}] loaded_model transformer_options keys: {list(to.keys())[:10]}", flush=True)
+        except Exception as e:
+            print(f"[DIAG-{label}] model_options error: {e}", flush=True)
         return {id(o) for o in gc.get_objects() if isinstance(o, torch.Tensor) and not o.is_cuda}
 
     snap_before_ipa = _diag_snapshot("before-ipa")
@@ -387,7 +393,6 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
             ref_info = []
             for r in refs:
                 if isinstance(r, dict):
-                    # 어느 객체의 __dict__인지 찾기
                     owners = [o for o in gc.get_referrers(r) if hasattr(o, '__dict__') and o.__dict__ is r]
                     ref_info.append(f"dict(owner={[type(o).__name__ for o in owners[:2]]})")
                 elif isinstance(r, list):
@@ -395,6 +400,33 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
                 else:
                     ref_info.append(type(r).__name__)
             print(f"[DIAG] new_tensor[{i}] shape={t.shape} dtype={t.dtype} referrers={ref_info[:4]}", flush=True)
+        # list(1160) 소유자 2단계 추적
+        if new_tensor_objs:
+            try:
+                first_t = new_tensor_objs[0]
+                for r in gc.get_referrers(first_t):
+                    if isinstance(r, list) and len(r) >= 100:
+                        # list(1160) 찾음 — 이것의 소유자 추적
+                        big_refs = gc.get_referrers(r)
+                        for br in big_refs[:5]:
+                            if isinstance(br, list):
+                                small_refs = gc.get_referrers(br)
+                                for sr in small_refs[:3]:
+                                    if isinstance(sr, dict):
+                                        owners = [o for o in gc.get_referrers(sr) if hasattr(o, '__dict__') and o.__dict__ is sr]
+                                        print(f"[DIAG-V79] list({len(r)})→list({len(br)})→dict(owner={[type(o).__name__ for o in owners[:2]]})", flush=True)
+                                    elif isinstance(sr, list):
+                                        print(f"[DIAG-V79] list({len(r)})→list({len(br)})→list({len(sr)})", flush=True)
+                                    else:
+                                        print(f"[DIAG-V79] list({len(r)})→list({len(br)})→{type(sr).__name__}", flush=True)
+                            elif isinstance(br, dict):
+                                owners = [o for o in gc.get_referrers(br) if hasattr(o, '__dict__') and o.__dict__ is br]
+                                print(f"[DIAG-V79] list({len(r)})→dict(owner={[type(o).__name__ for o in owners[:2]]})", flush=True)
+                            else:
+                                print(f"[DIAG-V79] list({len(r)})→{type(br).__name__}", flush=True)
+                        break
+            except Exception as e:
+                print(f"[DIAG-V79] deep referrer error: {e}", flush=True)
     except Exception as e:
         print(f"[DIAG] referrer scan error: {e}", flush=True)
 
@@ -442,6 +474,24 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
                 print(f"[V76] removed model_with_ipa from current_loaded_models: {before}→{after}", flush=True)
         except Exception as e:
             print(f"[V76] cleanup error: {e}", flush=True)
+
+        # V79 fix: loaded_model.model_options['transformer_options']에서 ipadapter 캐시 제거
+        # (ModelPatcher.clone()이 shallow copy라 model_with_ipa와 같은 dict를 공유함)
+        try:
+            if hasattr(loaded_model, 'model_options') and isinstance(loaded_model.model_options, dict):
+                to = loaded_model.model_options.get('transformer_options', {})
+                before_keys = list(to.keys())
+                removed = []
+                for key in list(to.keys()):
+                    key_lower = str(key).lower()
+                    if 'ipadapter' in key_lower or 'ip_adapter' in key_lower or 'attn_stored' in key_lower:
+                        del to[key]
+                        removed.append(key)
+                print(f"[V79] transformer_options before: {before_keys} → removed: {removed}", flush=True)
+            else:
+                print(f"[V79] loaded_model has no model_options or not dict", flush=True)
+        except Exception as e:
+            print(f"[V79] transformer_options clear error: {e}", flush=True)
 
         del model_with_ipa, positive, negative_cond, latent, ipa_node
         try:
