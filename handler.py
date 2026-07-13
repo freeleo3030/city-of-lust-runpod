@@ -6,7 +6,7 @@ import os
 import gc
 import tracemalloc
 
-print("handler.py starting... V80", flush=True)
+print("handler.py starting... V81", flush=True)
 
 import os
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -259,6 +259,7 @@ def ipadapter_img2img(prompt, negative_prompt, pose_image_b64, face_image_b64, w
         result_img = decoder.decode(loaded_vae, sampled)[0]
         return result_img
     finally:
+        # V81: model_with_ipa 내부 참조 완전 클리어
         try:
             import comfy.model_management as mm
             before = len(mm.current_loaded_models)
@@ -269,9 +270,24 @@ def ipadapter_img2img(prompt, negative_prompt, pose_image_b64, face_image_b64, w
             ]
             after = len(mm.current_loaded_models)
             if before != after:
-                print(f"[V76] removed model_with_ipa from current_loaded_models: {before}→{after}", flush=True)
+                print(f"[V76] removed model_with_ipa: {before}→{after}", flush=True)
         except Exception as e:
             print(f"[V76] cleanup error: {e}", flush=True)
+
+        try:
+            if hasattr(model_with_ipa, 'model_options') and isinstance(model_with_ipa.model_options, dict):
+                to = model_with_ipa.model_options.get('transformer_options', {})
+                to.clear()
+                model_with_ipa.model_options.clear()
+            if hasattr(model_with_ipa, 'patches') and isinstance(model_with_ipa.patches, dict):
+                model_with_ipa.patches.clear()
+            if hasattr(model_with_ipa, 'object_patches') and isinstance(model_with_ipa.object_patches, dict):
+                model_with_ipa.object_patches.clear()
+            if hasattr(model_with_ipa, 'parent'):
+                model_with_ipa.parent = None
+            print("[V81] model_with_ipa cleared", flush=True)
+        except Exception as e:
+            print(f"[V81] clear error: {e}", flush=True)
 
         del model_with_ipa, positive, negative_cond, latent, ipa_node
         try:
@@ -333,43 +349,6 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
     latent_creator = EmptyLatentImage()
     latent = latent_creator.generate(width, height, 1)[0]
 
-    # V77 진단: tensor 스냅샷 + 주요 전역 객체 상태 출력
-    def _diag_snapshot(label):
-        try:
-            cpu_t = [o for o in gc.get_objects() if isinstance(o, torch.Tensor) and not o.is_cuda]
-            gb = sum(t.element_size() * t.nelement() for t in cpu_t) / 1024**3
-            print(f"[DIAG-{label}] CPU tensors: {len(cpu_t)}개 {gb:.2f}GB", flush=True)
-        except Exception as e:
-            print(f"[DIAG-{label}] tensor scan error: {e}", flush=True)
-            return set()
-        try:
-            if hasattr(loaded_model, 'patches'):
-                print(f"[DIAG-{label}] loaded_model.patches: {len(loaded_model.patches)} keys → {list(loaded_model.patches.keys())[:6]}", flush=True)
-        except Exception as e:
-            print(f"[DIAG-{label}] patches error: {e}", flush=True)
-        try:
-            if loaded_ipadapter is not None and hasattr(loaded_ipadapter, '__dict__'):
-                ipa_t_count = sum(1 for v in vars(loaded_ipadapter).values() if isinstance(v, torch.Tensor))
-                print(f"[DIAG-{label}] loaded_ipadapter tensor attrs: {ipa_t_count}", flush=True)
-        except Exception as e:
-            print(f"[DIAG-{label}] ipadapter error: {e}", flush=True)
-        try:
-            if loaded_clip_vision is not None and hasattr(loaded_clip_vision, 'model'):
-                cv_model = loaded_clip_vision.model
-                buf_count = len(cv_model._buffers) if hasattr(cv_model, '_buffers') else -1
-                print(f"[DIAG-{label}] clip_vision._buffers: {buf_count}", flush=True)
-        except Exception as e:
-            print(f"[DIAG-{label}] clip_vision error: {e}", flush=True)
-        try:
-            if hasattr(loaded_model, 'model_options') and isinstance(loaded_model.model_options, dict):
-                to = loaded_model.model_options.get('transformer_options', {})
-                print(f"[DIAG-{label}] loaded_model transformer_options keys: {list(to.keys())[:10]}", flush=True)
-        except Exception as e:
-            print(f"[DIAG-{label}] model_options error: {e}", flush=True)
-        return {id(o) for o in gc.get_objects() if isinstance(o, torch.Tensor) and not o.is_cuda}
-
-    snap_before_ipa = _diag_snapshot("before-ipa")
-
     ipa_node = IPAdapterClass()
     result = ipa_node.apply_ipadapter(
         model=loaded_model, ipadapter=loaded_ipadapter,
@@ -380,100 +359,19 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
     model_with_ipa = result[0]
     del result
 
-    # V77 진단: apply_ipadapter 직후 — 여기서 늘었으면 IPA 자체가 원인
-    snap_after_ipa = _diag_snapshot("after-ipa")
-    new_after_ipa = snap_after_ipa - snap_before_ipa
-    print(f"[DIAG] apply_ipadapter로 새로 생긴 CPU tensor: {len(new_after_ipa)}개", flush=True)
-    # 새 tensor 중 첫 3개의 referrers 출력
-    try:
-        new_tensor_objs = [o for o in gc.get_objects()
-                           if isinstance(o, torch.Tensor) and not o.is_cuda and id(o) in new_after_ipa]
-        for i, t in enumerate(new_tensor_objs[:3]):
-            refs = gc.get_referrers(t)
-            ref_info = []
-            for r in refs:
-                if isinstance(r, dict):
-                    owners = [o for o in gc.get_referrers(r) if hasattr(o, '__dict__') and o.__dict__ is r]
-                    ref_info.append(f"dict(owner={[type(o).__name__ for o in owners[:2]]})")
-                elif isinstance(r, list):
-                    ref_info.append(f"list(len={len(r)})")
-                else:
-                    ref_info.append(type(r).__name__)
-            print(f"[DIAG] new_tensor[{i}] shape={t.shape} dtype={t.dtype} referrers={ref_info[:4]}", flush=True)
-        # V80: cell 소유자 추적 — list(1160)을 캡처한 closure 함수 찾기
-        if new_tensor_objs:
-            try:
-                first_t = new_tensor_objs[0]
-                for r in gc.get_referrers(first_t):
-                    if isinstance(r, list) and len(r) >= 100:
-                        big_list = r
-                        for br in gc.get_referrers(big_list):
-                            if type(br).__name__ == 'cell':
-                                # cell을 소유한 function 찾기
-                                fn_list = [o for o in gc.get_referrers(br) if callable(o) and hasattr(o, '__code__')]
-                                for fn in fn_list[:3]:
-                                    code = fn.__code__
-                                    fn_holders = gc.get_referrers(fn)
-                                    holder_info = []
-                                    for h in fn_holders[:5]:
-                                        if isinstance(h, dict):
-                                            owners2 = [o for o in gc.get_referrers(h) if hasattr(o, '__dict__') and o.__dict__ is h]
-                                            holder_info.append(f"dict(owner={[type(o).__name__ for o in owners2[:2]]})")
-                                        elif isinstance(h, list):
-                                            holder_info.append(f"list({len(h)})")
-                                        else:
-                                            holder_info.append(type(h).__name__)
-                                    print(f"[DIAG-V80] cell→fn {code.co_qualname} @ {code.co_filename.split('/')[-1]}:{code.co_firstlineno} holders={holder_info[:4]}", flush=True)
-                                break
-                        break
-            except Exception as e:
-                print(f"[DIAG-V80] cell scan error: {e}", flush=True)
-        # model_with_ipa 속성 목록 출력 (patches_replace, object_patches 등)
-        try:
-            if 'model_with_ipa' in dir():
-                attrs = {k: type(v).__name__ for k, v in vars(model_with_ipa).items() if k.startswith('p') or k in ('object_patches', 'model_options')}
-                print(f"[DIAG-V80] model_with_ipa attrs: {attrs}", flush=True)
-        except Exception as e:
-            print(f"[DIAG-V80] model_with_ipa attrs error: {e}", flush=True)
-    except Exception as e:
-        print(f"[DIAG] referrer scan error: {e}", flush=True)
-
     try:
         sampler = KSampler()
-
-        snap_before_sample = _diag_snapshot("before-sample")
-
         sampled = sampler.sample(
             model_with_ipa, seed, steps, cfg_scale,
             "euler_ancestral", "karras",
             positive, negative_cond, latent, denoise=1.0
         )[0]
 
-        # V77 진단: sample 직후 — 여기서 늘었으면 KSampler가 원인
-        snap_after_sample = _diag_snapshot("after-sample")
-        new_after_sample = snap_after_sample - snap_before_sample
-        print(f"[DIAG] KSampler.sample로 새로 생긴 CPU tensor: {len(new_after_sample)}개", flush=True)
-
         decoder = VAEDecode()
         result_image = decoder.decode(loaded_vae, sampled)[0]
         return result_image
     finally:
-        # V76: model_with_ipa가 current_loaded_models에 남아있으면 제거
-        # (apply_ipadapter가 loaded_model.clone()을 mm에 등록할 수 있음)
-        # V77 진단: del 전 loaded_model.patches 상태
-        try:
-            if hasattr(loaded_model, 'patches'):
-                print(f"[DIAG-finally] loaded_model.patches: {len(loaded_model.patches)} keys", flush=True)
-            for attr in ('patches_replace', 'object_patches', 'extra_preserved_attrs'):
-                v = getattr(model_with_ipa, attr, None)
-                if v:
-                    print(f"[DIAG-finally] model_with_ipa.{attr}: {type(v).__name__} len={len(v)}", flush=True)
-                    if isinstance(v, dict):
-                        for k2, v2 in list(v.items())[:5]:
-                            print(f"[DIAG-finally]   [{k2}] → {type(v2).__name__}", flush=True)
-        except Exception as e:
-            print(f"[DIAG-finally] patches check error: {e}", flush=True)
-
+        # V81: model_with_ipa 내부 참조 완전 클리어 (closure/embedding 해제)
         try:
             import comfy.model_management as mm
             before = len(mm.current_loaded_models)
@@ -484,27 +382,26 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
             ]
             after = len(mm.current_loaded_models)
             if before != after:
-                print(f"[V76] removed model_with_ipa from current_loaded_models: {before}→{after}", flush=True)
+                print(f"[V76] removed model_with_ipa: {before}→{after}", flush=True)
         except Exception as e:
             print(f"[V76] cleanup error: {e}", flush=True)
 
-        # V79 fix: loaded_model.model_options['transformer_options']에서 ipadapter 캐시 제거
-        # (ModelPatcher.clone()이 shallow copy라 model_with_ipa와 같은 dict를 공유함)
         try:
-            if hasattr(loaded_model, 'model_options') and isinstance(loaded_model.model_options, dict):
-                to = loaded_model.model_options.get('transformer_options', {})
-                before_keys = list(to.keys())
-                removed = []
-                for key in list(to.keys()):
-                    key_lower = str(key).lower()
-                    if 'ipadapter' in key_lower or 'ip_adapter' in key_lower or 'attn_stored' in key_lower:
-                        del to[key]
-                        removed.append(key)
-                print(f"[V79] transformer_options before: {before_keys} → removed: {removed}", flush=True)
-            else:
-                print(f"[V79] loaded_model has no model_options or not dict", flush=True)
+            # transformer_options 안에 IP-Adapter closure + face embedding이 있음 → 클리어
+            if hasattr(model_with_ipa, 'model_options') and isinstance(model_with_ipa.model_options, dict):
+                to = model_with_ipa.model_options.get('transformer_options', {})
+                to.clear()
+                model_with_ipa.model_options.clear()
+            if hasattr(model_with_ipa, 'patches') and isinstance(model_with_ipa.patches, dict):
+                model_with_ipa.patches.clear()
+            if hasattr(model_with_ipa, 'object_patches') and isinstance(model_with_ipa.object_patches, dict):
+                model_with_ipa.object_patches.clear()
+            # parent → loaded_model 참조 끊기
+            if hasattr(model_with_ipa, 'parent'):
+                model_with_ipa.parent = None
+            print("[V81] model_with_ipa cleared", flush=True)
         except Exception as e:
-            print(f"[V79] transformer_options clear error: {e}", flush=True)
+            print(f"[V81] clear error: {e}", flush=True)
 
         del model_with_ipa, positive, negative_cond, latent, ipa_node
         try:
@@ -514,12 +411,11 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
         del face_tensor
         gc.collect()
 
-        # V77 진단: gc.collect() 후 — del + collect로 얼마나 줄었는지
         try:
             cpu_t = [o for o in gc.get_objects() if isinstance(o, torch.Tensor) and not o.is_cuda]
-            print(f"[DIAG-after-del] CPU tensors after del+collect: {len(cpu_t)}개 {sum(t.element_size()*t.nelement() for t in cpu_t)/1024**3:.2f}GB", flush=True)
-        except Exception as e:
-            print(f"[DIAG-after-del] error: {e}", flush=True)
+            print(f"[V81] CPU tensors after del+collect: {len(cpu_t)}개 {sum(t.element_size()*t.nelement() for t in cpu_t)/1024**3:.2f}GB", flush=True)
+        except Exception:
+            pass
 
         _force_vram_free()
 
