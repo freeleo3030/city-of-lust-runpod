@@ -6,7 +6,7 @@ import os
 import gc
 import tracemalloc
 
-print("handler.py starting... V87", flush=True)
+print("handler.py starting... V88", flush=True)
 
 import os
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -14,7 +14,8 @@ os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
 tracemalloc.start()
 
 # ComfyUI --lowvram 강제 (sys.argv 방식 + 나중에 vram_state 직접 설정으로 이중 보장)
-for flag in ['--lowvram', '--disable-cuda-malloc', '--disable-smart-memory']:
+# V88: --disable-async-offload 추가 → async weight offloading이 float32 cast buffer 누수의 근본 원인
+for flag in ['--lowvram', '--disable-cuda-malloc', '--disable-smart-memory', '--disable-async-offload']:
     if flag not in sys.argv:
         sys.argv.append(flag)
 
@@ -37,6 +38,25 @@ def _patch_pinned_memory():
             print("[PATCH] pin_memory → no-op", flush=True)
         else:
             print("[PATCH] pin_memory function not found", flush=True)
+        # V88: async weight offloading 직접 비활성화
+        # ENABLE_ASYNC_OFFLOAD 또는 동등한 변수
+        for async_attr in ['ENABLE_ASYNC_OFFLOAD', 'async_offload_enabled', 'use_async_offload']:
+            if hasattr(mm, async_attr):
+                old_v = getattr(mm, async_attr)
+                setattr(mm, async_attr, False)
+                print(f"[V88-PATCH] {async_attr}: {old_v} → False", flush=True)
+        # V88: stream 수 0으로 (async offloading용 CUDA stream 제거)
+        for stream_attr in ['OFFLOAD_WORKER_STREAMS', 'offload_streams', 'stream_count']:
+            if hasattr(mm, stream_attr):
+                val = getattr(mm, stream_attr)
+                print(f"[V88-PATCH] {stream_attr} found: {type(val).__name__} len={len(val) if hasattr(val, '__len__') else 'N/A'}", flush=True)
+        # V88: get_torch_device_stream 패치로 stream None 반환 → async offloading 중단
+        if hasattr(mm, 'get_torch_device_stream'):
+            original_stream_fn = mm.get_torch_device_stream
+            def _no_stream(*args, **kwargs):
+                return None
+            mm.get_torch_device_stream = _no_stream
+            print("[V88-PATCH] get_torch_device_stream → None (async offload 차단)", flush=True)
         # should_use_fp16 등 메모리 관련 내부 상태 출력
         for attr in ['current_loaded_models', 'loaded_models_ram', 'vram_state', 'total_vram']:
             if hasattr(mm, attr):
@@ -142,6 +162,45 @@ def _force_vram_free():
         print(f"[V87-C] CPU tensors after full cleanup: {len(all_cpu)}개 {total_gb:.2f}GB", flush=True)
     except Exception as e:
         print(f"[V87-C] error: {e}", flush=True)
+
+    # V88: LoadedModel 내부 weight cache 강제 클리어
+    # async offloading이 float32 cast 텐서를 LoadedModel 내부 list에 보관하는 것 차단
+    try:
+        import comfy.model_management as mm
+        cleared_any = False
+        for lm in mm.current_loaded_models:
+            # weights_loaded: async offloading이 loaded weight 참조를 추적하는 list
+            for attr in ['weights_loaded', 'model_weights_loaded', '_weights', 'offload_weights',
+                         'loaded_weights', 'cast_weights', 'stream_buffer', 'cpu_weights']:
+                obj = getattr(lm, attr, None)
+                if obj is not None and isinstance(obj, list) and len(obj) > 0:
+                    before_len = len(obj)
+                    obj.clear()
+                    print(f"[V88] lm.{attr} cleared: {before_len}개", flush=True)
+                    cleared_any = True
+                elif obj is not None and isinstance(obj, dict) and len(obj) > 0:
+                    before_len = len(obj)
+                    obj.clear()
+                    print(f"[V88] lm.{attr}(dict) cleared: {before_len}개", flush=True)
+                    cleared_any = True
+            # model 내부도 확인
+            m = getattr(lm, 'model', None)
+            if m is not None:
+                for attr in ['weights_loaded', 'offload_weights', 'cast_weights']:
+                    obj2 = getattr(m, attr, None)
+                    if obj2 is not None and isinstance(obj2, list) and len(obj2) > 0:
+                        obj2.clear()
+                        print(f"[V88] lm.model.{attr} cleared", flush=True)
+                        cleared_any = True
+        if not cleared_any:
+            print(f"[V88] no weight cache found in {len(mm.current_loaded_models)} LoadedModels", flush=True)
+        gc.collect()
+        gc.collect()
+        all_cpu2 = [t for t in gc.get_objects() if isinstance(t, torch.Tensor) and not t.is_cuda]
+        total_gb2 = sum(t.element_size() * t.nelement() for t in all_cpu2) / 1024**3
+        print(f"[V88] CPU tensors after LoadedModel clear: {len(all_cpu2)}개 {total_gb2:.2f}GB", flush=True)
+    except Exception as e:
+        print(f"[V88] error: {e}", flush=True)
 
     log_vram("after _force_vram_free")
 
