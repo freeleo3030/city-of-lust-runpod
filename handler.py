@@ -172,6 +172,11 @@ def ipadapter_img2img(prompt, negative_prompt, pose_image_b64, face_image_b64, w
     gc.collect()
     torch.cuda.empty_cache()
     torch.cuda.synchronize()
+    # V85: job 시작 전 CPU tensor id 스냅샷
+    try:
+        _before_tensor_ids = set(id(t) for t in gc.get_objects() if isinstance(t, torch.Tensor) and not t.is_cuda)
+    except Exception:
+        _before_tensor_ids = set()
     from PIL import Image
     from io import BytesIO
     from nodes import CLIPTextEncode, KSampler, VAEDecode, VAEEncode
@@ -336,6 +341,28 @@ def ipadapter_img2img(prompt, negative_prompt, pose_image_b64, face_image_b64, w
             pass
         del pose_tensor, face_tensor
         gc.collect()
+
+        # V85: 누수 tensor referrer 진단
+        try:
+            all_cpu = [t for t in gc.get_objects() if isinstance(t, torch.Tensor) and not t.is_cuda]
+            new_tensors = [t for t in all_cpu if id(t) not in _before_tensor_ids]
+            print(f"[V85] new CPU tensors vs job start: {len(new_tensors)}개", flush=True)
+            if new_tensors:
+                new_tensors_sorted = sorted(new_tensors, key=lambda t: t.nelement() * t.element_size(), reverse=True)
+                for i, sample in enumerate(new_tensors_sorted[:3]):
+                    mb = sample.element_size() * sample.nelement() / 1024**2
+                    refs = gc.get_referrers(sample)
+                    ref_detail = []
+                    for r in refs:
+                        if isinstance(r, dict):
+                            ref_detail.append(f"dict(keys={list(r.keys())[:5]})")
+                        else:
+                            ref_detail.append(type(r).__name__)
+                    print(f"[V85] #{i+1} shape={list(sample.shape)} dtype={sample.dtype} {mb:.1f}MB", flush=True)
+                    print(f"[V85] #{i+1} referrers={ref_detail}", flush=True)
+        except Exception as e:
+            print(f"[V85] referrer error: {e}", flush=True)
+
         _force_vram_free()
 
 
@@ -347,6 +374,11 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
     gc.collect()
     torch.cuda.empty_cache()
     torch.cuda.synchronize()
+    # V85: job 시작 전 CPU tensor id 스냅샷
+    try:
+        _before_tensor_ids = set(id(t) for t in gc.get_objects() if isinstance(t, torch.Tensor) and not t.is_cuda)
+    except Exception:
+        _before_tensor_ids = set()
 
     # VRAM 여유 확인 — 2GB 미만이면 IPA 스킵
     free, total = torch.cuda.mem_get_info()
@@ -495,6 +527,29 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
             print(f"[V82] CPU tensors after del+collect: {len(cpu_t)}개 {sum(t.element_size()*t.nelement() for t in cpu_t)/1024**3:.2f}GB", flush=True)
         except Exception:
             pass
+
+        # V85: 누수 tensor referrer 진단
+        try:
+            all_cpu = [t for t in gc.get_objects() if isinstance(t, torch.Tensor) and not t.is_cuda]
+            new_tensors = [t for t in all_cpu if id(t) not in _before_tensor_ids]
+            print(f"[V85] new CPU tensors vs job start: {len(new_tensors)}개", flush=True)
+            if new_tensors:
+                new_tensors_sorted = sorted(new_tensors, key=lambda t: t.nelement() * t.element_size(), reverse=True)
+                for i, sample in enumerate(new_tensors_sorted[:3]):
+                    mb = sample.element_size() * sample.nelement() / 1024**2
+                    refs = gc.get_referrers(sample)
+                    ref_types = [type(r).__name__ for r in refs]
+                    # dict referrer면 key 목록도 출력
+                    ref_detail = []
+                    for r in refs:
+                        if isinstance(r, dict):
+                            ref_detail.append(f"dict(keys={list(r.keys())[:5]})")
+                        else:
+                            ref_detail.append(type(r).__name__)
+                    print(f"[V85] #{i+1} shape={list(sample.shape)} dtype={sample.dtype} {mb:.1f}MB", flush=True)
+                    print(f"[V85] #{i+1} referrers={ref_detail}", flush=True)
+        except Exception as e:
+            print(f"[V85] referrer error: {e}", flush=True)
 
         _force_vram_free()
 
