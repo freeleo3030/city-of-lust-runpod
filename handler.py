@@ -85,6 +85,15 @@ def _force_vram_free():
     gc.collect()
     torch.cuda.empty_cache()
 
+    # V86: async weight offloading cast buffer 클리어 (STREAM_CAST_BUFFERS 누수 방지)
+    try:
+        import comfy.model_management as mm
+        if hasattr(mm, 'reset_cast_buffers'):
+            mm.reset_cast_buffers()
+            print("[V86] reset_cast_buffers OK", flush=True)
+    except Exception as e:
+        print(f"[V86] reset_cast_buffers error: {e}", flush=True)
+
     log_vram("after _force_vram_free")
 
 
