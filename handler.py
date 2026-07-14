@@ -427,21 +427,20 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
             print(f"[V76] cleanup error: {e}", flush=True)
 
         try:
-            # transformer_options 안에 IP-Adapter closure + face embedding이 있음 → 클리어
+            # V84: transformer_options 내용만 클리어, 키는 유지 (model_options.clear()하면 __del__이 KeyError로 죽어서 tensor 해제 안 됨)
             if hasattr(model_with_ipa, 'model_options') and isinstance(model_with_ipa.model_options, dict):
                 to = model_with_ipa.model_options.get('transformer_options', {})
                 to.clear()
-                model_with_ipa.model_options.clear()
+                # model_with_ipa.model_options.clear() ← 제거: transformer_options 키 자체를 지우면 __del__ KeyError
             if hasattr(model_with_ipa, 'patches') and isinstance(model_with_ipa.patches, dict):
                 model_with_ipa.patches.clear()
             if hasattr(model_with_ipa, 'object_patches') and isinstance(model_with_ipa.object_patches, dict):
                 model_with_ipa.object_patches.clear()
-            # parent → loaded_model 참조 끊기
             if hasattr(model_with_ipa, 'parent'):
                 model_with_ipa.parent = None
-            print("[V81] model_with_ipa cleared", flush=True)
+            print("[V84] model_with_ipa cleared", flush=True)
         except Exception as e:
-            print(f"[V81] clear error: {e}", flush=True)
+            print(f"[V84] clear error: {e}", flush=True)
 
         # V82: 원본 loaded_model에 누적된 patches/transformer_options 클리어
         try:
