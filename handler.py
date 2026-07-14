@@ -6,7 +6,7 @@ import os
 import gc
 import tracemalloc
 
-print("handler.py starting... V82", flush=True)
+print("handler.py starting... V87", flush=True)
 
 import os
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -93,6 +93,55 @@ def _force_vram_free():
             print("[V86] reset_cast_buffers OK", flush=True)
     except Exception as e:
         print(f"[V86] reset_cast_buffers error: {e}", flush=True)
+
+    # V87-A: CLIPVision을 current_loaded_models에서 제거 → ComfyUI offload 타깃 제외
+    # 목적: CLIPVision이 VRAM→CPU cast buffer로 offload되는 것 자체를 막음
+    # (reset_cast_buffers가 ModelPatcher 참조 때문에 해제 못하는 근본 원인 차단)
+    try:
+        import comfy.model_management as mm
+        if loaded_clip_vision is not None:
+            before = len(mm.current_loaded_models)
+            # CLIPVision 모델이 current_loaded_models에 있으면 제거
+            mm.current_loaded_models[:] = [
+                lm for lm in mm.current_loaded_models
+                if getattr(lm, 'model', None) is not loaded_clip_vision
+                and getattr(getattr(lm, 'model', None), 'load_model', None) is not loaded_clip_vision
+                and lm is not loaded_clip_vision
+            ]
+            after = len(mm.current_loaded_models)
+            print(f"[V87-A] current_loaded_models: {before}→{after} (CLIPVision 제거)", flush=True)
+    except Exception as e:
+        print(f"[V87-A] error: {e}", flush=True)
+
+    # V87-B: STREAM_CAST_BUFFERS 직접 접근하여 CLIPVision 관련 텐서만 강제 해제
+    try:
+        import comfy.model_management as mm
+        import torch
+        if hasattr(mm, 'STREAM_CAST_BUFFERS') and mm.STREAM_CAST_BUFFERS:
+            before_count = len(mm.STREAM_CAST_BUFFERS)
+            before_gb = sum(t.element_size() * t.nelement() for t in mm.STREAM_CAST_BUFFERS) / 1024**3
+            # 전체 클리어 (reset_cast_buffers와 동일하지만 del로 실제 참조 제거)
+            for t in list(mm.STREAM_CAST_BUFFERS):
+                del t
+            mm.STREAM_CAST_BUFFERS.clear()
+            gc.collect()
+            print(f"[V87-B] STREAM_CAST_BUFFERS cleared: {before_count}개 {before_gb:.2f}GB", flush=True)
+        else:
+            scb_count = len(mm.STREAM_CAST_BUFFERS) if hasattr(mm, 'STREAM_CAST_BUFFERS') else -1
+            print(f"[V87-B] STREAM_CAST_BUFFERS count={scb_count}", flush=True)
+    except Exception as e:
+        print(f"[V87-B] error: {e}", flush=True)
+
+    # V87-C: gc 2차 collect + CPU tensor 총량 리포트
+    try:
+        import torch
+        gc.collect()
+        gc.collect()
+        all_cpu = [t for t in gc.get_objects() if isinstance(t, torch.Tensor) and not t.is_cuda]
+        total_gb = sum(t.element_size() * t.nelement() for t in all_cpu) / 1024**3
+        print(f"[V87-C] CPU tensors after full cleanup: {len(all_cpu)}개 {total_gb:.2f}GB", flush=True)
+    except Exception as e:
+        print(f"[V87-C] error: {e}", flush=True)
 
     log_vram("after _force_vram_free")
 
