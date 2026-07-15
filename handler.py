@@ -6,7 +6,7 @@ import os
 import gc
 import tracemalloc
 
-print("handler.py starting... V89", flush=True)
+print("handler.py starting... V90", flush=True)
 
 # V89: IPA job 카운터 — 70개마다 worker 재시작 (503GB RAM / 5.8GB per job = ~86, 여유 16개)
 _ipa_job_count = 0
@@ -462,9 +462,10 @@ def ipadapter_img2img(prompt, negative_prompt, pose_image_b64, face_image_b64, w
         del pose_tensor, face_tensor
         gc.collect()
 
-        # V85+V89: 누수 tensor referrer 진단 + 소유자 역추적
+        # V85+V90: 누수 tensor → list → cell → 클로저 함수 역추적
         try:
             import comfy.model_management as _mm_diag
+            import types
             all_cpu = [t for t in gc.get_objects() if isinstance(t, torch.Tensor) and not t.is_cuda]
             new_tensors = [t for t in all_cpu if id(t) not in _before_tensor_ids]
             print(f"[V85] new CPU tensors vs job start: {len(new_tensors)}개", flush=True)
@@ -477,38 +478,54 @@ def ipadapter_img2img(prompt, negative_prompt, pose_image_b64, face_image_b64, w
                 for r in refs:
                     if isinstance(r, list):
                         list_owners = gc.get_referrers(r)
-                        for lo in list_owners[:4]:
-                            if isinstance(lo, dict):
+                        for lo in list_owners[:6]:
+                            if isinstance(lo, types.CellType):
+                                # cell 소유자 함수 역추적
+                                cell_owners = gc.get_referrers(lo)
+                                for co in cell_owners[:4]:
+                                    if callable(co) and hasattr(co, '__name__'):
+                                        mod = getattr(co, '__module__', '?')
+                                        print(f"[V90] tensor→list→cell→func: {mod}.{co.__name__}", flush=True)
+                                    elif isinstance(co, tuple):
+                                        # __closure__ tuple — 소유 함수 찾기
+                                        closure_owners = gc.get_referrers(co)
+                                        for fo in closure_owners[:3]:
+                                            if callable(fo) and hasattr(fo, '__name__'):
+                                                mod = getattr(fo, '__module__', '?')
+                                                print(f"[V90] tensor→list→cell→closure→func: {mod}.{fo.__name__}", flush=True)
+                                            elif hasattr(fo, '__class__'):
+                                                print(f"[V90] tensor→list→cell→closure→{type(fo).__name__}", flush=True)
+                            elif isinstance(lo, dict):
                                 mm_vars = vars(_mm_diag)
                                 if lo is mm_vars:
                                     matches = [k for k, v in mm_vars.items() if v is r]
-                                    print(f"[V89] tensor → list → mm.{matches}", flush=True)
+                                    print(f"[V90] tensor→list→mm.{matches}", flush=True)
                                 else:
                                     dict_owners = gc.get_referrers(lo)
                                     for do in dict_owners[:2]:
                                         if hasattr(do, '__dict__') and do.__dict__ is lo:
                                             attrs = [k for k, v in lo.items() if v is r]
-                                            print(f"[V89] tensor → list → {type(do).__name__}.{attrs}", flush=True)
+                                            print(f"[V90] tensor→list→{type(do).__name__}.{attrs}", flush=True)
                                             break
                                     else:
-                                        print(f"[V89] tensor → list → dict(keys={list(lo.keys())[:5]})", flush=True)
+                                        print(f"[V90] tensor→list→dict(keys={list(lo.keys())[:5]})", flush=True)
                             elif isinstance(lo, type(_mm_diag)):
-                                print(f"[V89] tensor → list → module({lo.__name__})", flush=True)
-                            elif hasattr(lo, '__class__'):
-                                print(f"[V89] tensor → list → {type(lo).__name__}", flush=True)
+                                print(f"[V90] tensor→list→module({lo.__name__})", flush=True)
+                            else:
+                                print(f"[V90] tensor→list→{type(lo).__name__}", flush=True)
                     elif isinstance(r, dict):
                         mm_vars = vars(_mm_diag)
                         if r is mm_vars:
                             matches = [k for k, v in mm_vars.items() if v is sample]
-                            print(f"[V89] tensor → directly in mm.{matches}", flush=True)
+                            print(f"[V90] tensor→directly in mm.{matches}", flush=True)
                         else:
-                            print(f"[V85] referrer=dict(keys={list(r.keys())[:5]})", flush=True)
+                            print(f"[V90] tensor→dict(keys={list(r.keys())[:5]})", flush=True)
                     elif isinstance(r, tuple):
                         tuple_owners = gc.get_referrers(r)
                         for to in tuple_owners[:2]:
-                            print(f"[V89] tensor → tuple → {type(to).__name__}", flush=True)
+                            print(f"[V90] tensor→tuple→{type(to).__name__}", flush=True)
         except Exception as e:
-            print(f"[V85] referrer error: {e}", flush=True)
+            print(f"[V90] referrer error: {e}", flush=True)
 
         _force_vram_free()
 
