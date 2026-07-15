@@ -692,88 +692,72 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
         except Exception:
             pass
 
-        # V96: gc.get_referrers()로 누가 텐서를 붙잡고 있는지 역추적
+        # V97: list len=5 정체 확인 + IPA attn_processors 강제 초기화
         try:
             import sys
 
             all_cpu = [t for t in gc.get_objects() if isinstance(t, torch.Tensor) and not t.is_cuda]
             new_tensors = [t for t in all_cpu if id(t) not in _before_tensor_ids]
-            print(f"[V96] new CPU tensors: {len(new_tensors)}개", flush=True)
+            print(f"[V97] new CPU tensors: {len(new_tensors)}개", flush=True)
 
             if new_tensors:
                 new_tensors_sorted = sorted(new_tensors, key=lambda t: t.nelement() * t.element_size(), reverse=True)
+                top5_slice = new_tensors_sorted[:5]  # 명시적으로 저장해서 id 비교용
                 sample = new_tensors_sorted[0]
                 mb = sample.element_size() * sample.nelement() / 1024**2
-                print(f"[V96] #1 shape={list(sample.shape)} dtype={sample.dtype} {mb:.1f}MB", flush=True)
+                print(f"[V97] #1 shape={list(sample.shape)} dtype={sample.dtype} {mb:.1f}MB", flush=True)
 
-                # 상위 5개 텐서에 대해 referrers 역추적
-                for ti, t in enumerate(new_tensors_sorted[:5]):
-                    try:
-                        refs = gc.get_referrers(t)
-                        # 리스트/컴프리헨션 자체 제외
-                        refs = [r for r in refs if r is not new_tensors_sorted and r is not all_cpu and r is not new_tensors]
-                        print(f"[V96] tensor#{ti+1} referrers ({len(refs)}개):", flush=True)
-                        for ri, ref in enumerate(refs[:8]):
-                            ref_type = type(ref).__name__
-                            ref_repr = ""
-                            if isinstance(ref, dict):
-                                keys = list(ref.keys())[:5]
-                                ref_repr = f"keys={keys}"
-                                # dict가 어느 객체의 __dict__인지 찾기
-                                owners = gc.get_referrers(ref)
-                                for owner in owners[:3]:
-                                    if hasattr(owner, '__dict__') and owner.__dict__ is ref:
-                                        ref_repr += f" owner={type(owner).__name__}({getattr(owner, '__module__', '?')})"
-                                        break
-                            elif isinstance(ref, list):
-                                ref_repr = f"len={len(ref)}"
-                                owners = gc.get_referrers(ref)
-                                for owner in owners[:3]:
-                                    if isinstance(owner, dict):
-                                        for k, v in owner.items():
-                                            if v is ref:
-                                                ref_repr += f" in_dict_key='{k}'"
-                                                break
-                                    elif hasattr(owner, '__dict__'):
-                                        for k, v in vars(owner).items():
-                                            if v is ref:
-                                                ref_repr += f" attr={type(owner).__name__}.{k}"
-                                                break
-                            elif hasattr(ref, '__name__'):
-                                ref_repr = ref.__name__
-                            elif hasattr(ref, '__class__'):
-                                mod = getattr(ref.__class__, '__module__', '?')
-                                ref_repr = f"module={mod}"
-                            print(f"[V96]   ref#{ri}: {ref_type} {ref_repr}", flush=True)
-                    except Exception as re:
-                        print(f"[V96] tensor#{ti+1} referrer error: {re}", flush=True)
+                # list len=5 의 정체 추적
+                refs = gc.get_referrers(sample)
+                for ref in refs:
+                    if isinstance(ref, list) and len(ref) == 5:
+                        if ref is top5_slice:
+                            print(f"[V97] list len=5 → 우리 진단코드 top5_slice (무시 가능)", flush=True)
+                        else:
+                            print(f"[V97] list len=5 → 외부 리스트 발견! id={id(ref)}", flush=True)
+                            # 이 리스트를 누가 붙잡고 있는지
+                            list_owners = gc.get_referrers(ref)
+                            for lo in list_owners[:5]:
+                                lo_type = type(lo).__name__
+                                lo_repr = ""
+                                if isinstance(lo, dict):
+                                    keys = [k for k in lo.keys() if not k.startswith('__')][:5]
+                                    lo_repr = f"keys={keys}"
+                                    for owner in gc.get_referrers(lo)[:3]:
+                                        if hasattr(owner, '__dict__') and owner.__dict__ is lo:
+                                            lo_repr += f" owner={type(owner).__name__}({getattr(owner, '__module__', '?')})"
+                                            break
+                                elif isinstance(lo, list):
+                                    lo_repr = f"len={len(lo)}"
+                                elif hasattr(lo, '__class__'):
+                                    lo_repr = f"class={type(lo).__name__} mod={getattr(lo, '__module__', '?')}"
+                                print(f"[V97]   list_owner: {lo_type} {lo_repr}", flush=True)
 
-                # 모듈 레벨 변수에서 역추적 (handler.py 전역 포함)
-                print(f"[V96] checking handler globals...", flush=True)
-                handler_mod = sys.modules.get('__main__') or sys.modules.get('handler')
-                if handler_mod:
-                    sample_id = id(sample)
-                    for attr in dir(handler_mod):
-                        try:
-                            val = getattr(handler_mod, attr, None)
-                            if val is None:
-                                continue
-                            if isinstance(val, torch.Tensor) and id(val) == sample_id:
-                                print(f"[V96] FOUND in handler globals: {attr}", flush=True)
-                            elif isinstance(val, dict):
-                                for k, v in val.items():
-                                    if isinstance(v, torch.Tensor) and id(v) == sample_id:
-                                        print(f"[V96] FOUND in handler.{attr}['{k}']", flush=True)
-                            elif isinstance(val, list):
-                                for i, v in enumerate(val):
-                                    if isinstance(v, torch.Tensor) and id(v) == sample_id:
-                                        print(f"[V96] FOUND in handler.{attr}[{i}]", flush=True)
-                        except Exception:
-                            pass
+                # IPA attn_processors 확인
+                try:
+                    unet = loaded_model.model.diffusion_model
+                    procs = unet.attn_processors
+                    ipa_count = sum(1 for v in procs.values() if 'IP' in type(v).__name__ or 'ip' in type(v).__name__.lower())
+                    print(f"[V97] unet.attn_processors: {len(procs)}개, IPA 타입: {ipa_count}개", flush=True)
+                    if ipa_count > 0:
+                        sample_proc = next((v for v in procs.values() if 'IP' in type(v).__name__), None)
+                        if sample_proc:
+                            print(f"[V97] IPA proc type: {type(sample_proc).__name__}", flush=True)
+                            # proc 내부 텐서 크기 확인
+                            for attr_name in ['to_k_ip', 'to_v_ip', 'ip_layers', 'weight']:
+                                attr_val = getattr(sample_proc, attr_name, None)
+                                if attr_val is not None:
+                                    if isinstance(attr_val, torch.Tensor):
+                                        print(f"[V97]   proc.{attr_name}: shape={list(attr_val.shape)} device={attr_val.device}", flush=True)
+                                    elif hasattr(attr_val, 'weight'):
+                                        w = attr_val.weight
+                                        print(f"[V97]   proc.{attr_name}.weight: shape={list(w.shape)} device={w.device}", flush=True)
+                except Exception as pe:
+                    print(f"[V97] attn_processors check error: {pe}", flush=True)
 
         except Exception as e:
             import traceback
-            print(f"[V96] error: {e}\n{traceback.format_exc()}", flush=True)
+            print(f"[V97] error: {e}\n{traceback.format_exc()}", flush=True)
 
         _force_vram_free()
 
