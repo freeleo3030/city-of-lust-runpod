@@ -692,75 +692,29 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
         except Exception:
             pass
 
-        # V98: pinned_memory + sample refcount 심층 분석
+        # V99: pinned_memory pool 강제 해제 시도
         try:
-            import sys, ctypes
-
-            all_cpu = [t for t in gc.get_objects() if isinstance(t, torch.Tensor) and not t.is_cuda]
-            new_tensors = [t for t in all_cpu if id(t) not in _before_tensor_ids]
-            print(f"[V98] new CPU tensors: {len(new_tensors)}개", flush=True)
-
-            if new_tensors:
-                new_tensors_sorted = sorted(new_tensors, key=lambda t: t.nelement() * t.element_size(), reverse=True)
-                sample = new_tensors_sorted[0]
-                mb = sample.element_size() * sample.nelement() / 1024**2
-                refcount = ctypes.c_long.from_address(id(sample)).value
-                print(f"[V98] #1 shape={list(sample.shape)} dtype={sample.dtype} {mb:.1f}MB refcount={refcount}", flush=True)
-
-                # 1. pinned_memory 확인
-                try:
-                    import comfy.pinned_memory as pm
-                    pm_dict = getattr(pm, 'PINNED_MEMORY', None)
-                    if pm_dict is not None:
-                        sample_id = id(sample)
-                        found_in_pm = False
-                        for k, v in pm_dict.items():
-                            if isinstance(v, torch.Tensor) and id(v) == sample_id:
-                                print(f"[V98] FOUND in PINNED_MEMORY[{k}]", flush=True)
-                                found_in_pm = True
-                        if not found_in_pm:
-                            print(f"[V98] PINNED_MEMORY: {len(pm_dict)}개 항목, sample 없음", flush=True)
-                    else:
-                        print(f"[V98] PINNED_MEMORY attr not found", flush=True)
-                except Exception as pe:
-                    print(f"[V98] pinned_memory error: {pe}", flush=True)
-
-                # 2. loaded_ipadapter 내부 텐서 확인
-                try:
-                    ipa = loaded_ipadapter  # 전역 변수
-                    if ipa is not None:
-                        sample_id = id(sample)
-                        def search_obj(obj, path, depth=0):
-                            if depth > 4:
-                                return
-                            if isinstance(obj, torch.Tensor):
-                                if id(obj) == sample_id:
-                                    mb2 = obj.element_size() * obj.nelement() / 1024**2
-                                    print(f"[V98] FOUND in loaded_ipadapter.{path} device={obj.device} {mb2:.1f}MB", flush=True)
-                            elif isinstance(obj, dict):
-                                for k, v in list(obj.items()):
-                                    search_obj(v, f"{path}.{k}", depth+1)
-                            elif isinstance(obj, (list, tuple)):
-                                for i, v in enumerate(obj):
-                                    search_obj(v, f"{path}[{i}]", depth+1)
-                            elif hasattr(obj, '__dict__'):
-                                for k, v in list(vars(obj).items()):
-                                    search_obj(v, f"{path}.{k}", depth+1)
-                        search_obj(ipa, "ipa")
-                        print(f"[V98] loaded_ipadapter search done", flush=True)
-                except NameError:
-                    print(f"[V98] loaded_ipadapter not defined", flush=True)
-                except Exception as ie:
-                    print(f"[V98] ipadapter search error: {ie}", flush=True)
-
-                # 3. 모든 referrer 타입 통계
-                refs = gc.get_referrers(sample)
-                ref_types = [type(r).__name__ for r in refs]
-                print(f"[V98] all referrers: {ref_types}", flush=True)
-
+            import comfy.pinned_memory as pm
+            before_pm = len(getattr(pm, 'PINNED_MEMORY', {}))
+            if hasattr(pm, 'PINNED_MEMORY'):
+                pm.PINNED_MEMORY.clear()
+            after_pm = len(getattr(pm, 'PINNED_MEMORY', {}))
+            print(f"[V99] PINNED_MEMORY cleared: {before_pm}→{after_pm}개", flush=True)
         except Exception as e:
-            import traceback
-            print(f"[V98] error: {e}\n{traceback.format_exc()}", flush=True)
+            print(f"[V99] pinned_memory clear error: {e}", flush=True)
+
+        try:
+            import comfy.model_management as mm
+            if hasattr(mm, 'PINNED_MEMORY'):
+                mm.PINNED_MEMORY.clear()
+                print(f"[V99] mm.PINNED_MEMORY cleared", flush=True)
+        except Exception as e:
+            print(f"[V99] mm.PINNED_MEMORY error: {e}", flush=True)
+
+        # RAM before/after 비교
+        import psutil, os
+        ram_mb = psutil.Process(os.getpid()).memory_info().rss / 1024**2
+        print(f"[V99] RAM after pinned_memory clear: {ram_mb:.0f}MB", flush=True)
 
         _force_vram_free()
 
