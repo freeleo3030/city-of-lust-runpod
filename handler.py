@@ -692,72 +692,75 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
         except Exception:
             pass
 
-        # V97: list len=5 정체 확인 + IPA attn_processors 강제 초기화
+        # V98: pinned_memory + sample refcount 심층 분석
         try:
-            import sys
+            import sys, ctypes
 
             all_cpu = [t for t in gc.get_objects() if isinstance(t, torch.Tensor) and not t.is_cuda]
             new_tensors = [t for t in all_cpu if id(t) not in _before_tensor_ids]
-            print(f"[V97] new CPU tensors: {len(new_tensors)}개", flush=True)
+            print(f"[V98] new CPU tensors: {len(new_tensors)}개", flush=True)
 
             if new_tensors:
                 new_tensors_sorted = sorted(new_tensors, key=lambda t: t.nelement() * t.element_size(), reverse=True)
-                top5_slice = new_tensors_sorted[:5]  # 명시적으로 저장해서 id 비교용
                 sample = new_tensors_sorted[0]
                 mb = sample.element_size() * sample.nelement() / 1024**2
-                print(f"[V97] #1 shape={list(sample.shape)} dtype={sample.dtype} {mb:.1f}MB", flush=True)
+                refcount = ctypes.c_long.from_address(id(sample)).value
+                print(f"[V98] #1 shape={list(sample.shape)} dtype={sample.dtype} {mb:.1f}MB refcount={refcount}", flush=True)
 
-                # list len=5 의 정체 추적
-                refs = gc.get_referrers(sample)
-                for ref in refs:
-                    if isinstance(ref, list) and len(ref) == 5:
-                        if ref is top5_slice:
-                            print(f"[V97] list len=5 → 우리 진단코드 top5_slice (무시 가능)", flush=True)
-                        else:
-                            print(f"[V97] list len=5 → 외부 리스트 발견! id={id(ref)}", flush=True)
-                            # 이 리스트를 누가 붙잡고 있는지
-                            list_owners = gc.get_referrers(ref)
-                            for lo in list_owners[:5]:
-                                lo_type = type(lo).__name__
-                                lo_repr = ""
-                                if isinstance(lo, dict):
-                                    keys = [k for k in lo.keys() if not k.startswith('__')][:5]
-                                    lo_repr = f"keys={keys}"
-                                    for owner in gc.get_referrers(lo)[:3]:
-                                        if hasattr(owner, '__dict__') and owner.__dict__ is lo:
-                                            lo_repr += f" owner={type(owner).__name__}({getattr(owner, '__module__', '?')})"
-                                            break
-                                elif isinstance(lo, list):
-                                    lo_repr = f"len={len(lo)}"
-                                elif hasattr(lo, '__class__'):
-                                    lo_repr = f"class={type(lo).__name__} mod={getattr(lo, '__module__', '?')}"
-                                print(f"[V97]   list_owner: {lo_type} {lo_repr}", flush=True)
-
-                # IPA attn_processors 확인
+                # 1. pinned_memory 확인
                 try:
-                    unet = loaded_model.model.diffusion_model
-                    procs = unet.attn_processors
-                    ipa_count = sum(1 for v in procs.values() if 'IP' in type(v).__name__ or 'ip' in type(v).__name__.lower())
-                    print(f"[V97] unet.attn_processors: {len(procs)}개, IPA 타입: {ipa_count}개", flush=True)
-                    if ipa_count > 0:
-                        sample_proc = next((v for v in procs.values() if 'IP' in type(v).__name__), None)
-                        if sample_proc:
-                            print(f"[V97] IPA proc type: {type(sample_proc).__name__}", flush=True)
-                            # proc 내부 텐서 크기 확인
-                            for attr_name in ['to_k_ip', 'to_v_ip', 'ip_layers', 'weight']:
-                                attr_val = getattr(sample_proc, attr_name, None)
-                                if attr_val is not None:
-                                    if isinstance(attr_val, torch.Tensor):
-                                        print(f"[V97]   proc.{attr_name}: shape={list(attr_val.shape)} device={attr_val.device}", flush=True)
-                                    elif hasattr(attr_val, 'weight'):
-                                        w = attr_val.weight
-                                        print(f"[V97]   proc.{attr_name}.weight: shape={list(w.shape)} device={w.device}", flush=True)
+                    import comfy.pinned_memory as pm
+                    pm_dict = getattr(pm, 'PINNED_MEMORY', None)
+                    if pm_dict is not None:
+                        sample_id = id(sample)
+                        found_in_pm = False
+                        for k, v in pm_dict.items():
+                            if isinstance(v, torch.Tensor) and id(v) == sample_id:
+                                print(f"[V98] FOUND in PINNED_MEMORY[{k}]", flush=True)
+                                found_in_pm = True
+                        if not found_in_pm:
+                            print(f"[V98] PINNED_MEMORY: {len(pm_dict)}개 항목, sample 없음", flush=True)
+                    else:
+                        print(f"[V98] PINNED_MEMORY attr not found", flush=True)
                 except Exception as pe:
-                    print(f"[V97] attn_processors check error: {pe}", flush=True)
+                    print(f"[V98] pinned_memory error: {pe}", flush=True)
+
+                # 2. loaded_ipadapter 내부 텐서 확인
+                try:
+                    ipa = loaded_ipadapter  # 전역 변수
+                    if ipa is not None:
+                        sample_id = id(sample)
+                        def search_obj(obj, path, depth=0):
+                            if depth > 4:
+                                return
+                            if isinstance(obj, torch.Tensor):
+                                if id(obj) == sample_id:
+                                    mb2 = obj.element_size() * obj.nelement() / 1024**2
+                                    print(f"[V98] FOUND in loaded_ipadapter.{path} device={obj.device} {mb2:.1f}MB", flush=True)
+                            elif isinstance(obj, dict):
+                                for k, v in list(obj.items()):
+                                    search_obj(v, f"{path}.{k}", depth+1)
+                            elif isinstance(obj, (list, tuple)):
+                                for i, v in enumerate(obj):
+                                    search_obj(v, f"{path}[{i}]", depth+1)
+                            elif hasattr(obj, '__dict__'):
+                                for k, v in list(vars(obj).items()):
+                                    search_obj(v, f"{path}.{k}", depth+1)
+                        search_obj(ipa, "ipa")
+                        print(f"[V98] loaded_ipadapter search done", flush=True)
+                except NameError:
+                    print(f"[V98] loaded_ipadapter not defined", flush=True)
+                except Exception as ie:
+                    print(f"[V98] ipadapter search error: {ie}", flush=True)
+
+                # 3. 모든 referrer 타입 통계
+                refs = gc.get_referrers(sample)
+                ref_types = [type(r).__name__ for r in refs]
+                print(f"[V98] all referrers: {ref_types}", flush=True)
 
         except Exception as e:
             import traceback
-            print(f"[V97] error: {e}\n{traceback.format_exc()}", flush=True)
+            print(f"[V98] error: {e}\n{traceback.format_exc()}", flush=True)
 
         _force_vram_free()
 
