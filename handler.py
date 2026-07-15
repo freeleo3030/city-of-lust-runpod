@@ -692,108 +692,88 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
         except Exception:
             pass
 
-        # V95: comfy_aimdo host/vram buffer 포함 전체 타입 스캔
+        # V96: gc.get_referrers()로 누가 텐서를 붙잡고 있는지 역추적
         try:
-            import comfy.model_management as _mm
             import sys
 
             all_cpu = [t for t in gc.get_objects() if isinstance(t, torch.Tensor) and not t.is_cuda]
             new_tensors = [t for t in all_cpu if id(t) not in _before_tensor_ids]
-            print(f"[V95] new CPU tensors: {len(new_tensors)}개", flush=True)
+            print(f"[V96] new CPU tensors: {len(new_tensors)}개", flush=True)
 
             if new_tensors:
                 new_tensors_sorted = sorted(new_tensors, key=lambda t: t.nelement() * t.element_size(), reverse=True)
                 sample = new_tensors_sorted[0]
                 mb = sample.element_size() * sample.nelement() / 1024**2
-                print(f"[V95] #1 shape={list(sample.shape)} dtype={sample.dtype} {mb:.1f}MB", flush=True)
+                print(f"[V96] #1 shape={list(sample.shape)} dtype={sample.dtype} {mb:.1f}MB", flush=True)
 
-                leak_ids = {id(t) for t in new_tensors}
-                found_count = [0]
-
-                def _scan_obj(obj, path, visited, depth=0):
-                    oid = id(obj)
-                    if oid in visited or depth > 8:
-                        return
-                    visited.add(oid)
-                    if isinstance(obj, torch.Tensor):
-                        if id(obj) in leak_ids:
-                            found_count[0] += 1
-                            if found_count[0] <= 5:
-                                print(f"[V95] FOUND at: {path}", flush=True)
-                        return
+                # 상위 5개 텐서에 대해 referrers 역추적
+                for ti, t in enumerate(new_tensors_sorted[:5]):
                     try:
-                        if isinstance(obj, list):
-                            for i, item in enumerate(obj[:50]):
-                                _scan_obj(item, f"{path}[{i}]", visited, depth+1)
-                        elif isinstance(obj, dict):
-                            for k, v in list(obj.items())[:50]:
-                                _scan_obj(v, f"{path}['{k}']", visited, depth+1)
-                        elif hasattr(obj, '__dict__'):
-                            for k, v in list(vars(obj).items())[:50]:
-                                _scan_obj(v, f"{path}.{k}", visited, depth+1)
-                    except Exception:
-                        pass
+                        refs = gc.get_referrers(t)
+                        # 리스트/컴프리헨션 자체 제외
+                        refs = [r for r in refs if r is not new_tensors_sorted and r is not all_cpu and r is not new_tensors]
+                        print(f"[V96] tensor#{ti+1} referrers ({len(refs)}개):", flush=True)
+                        for ri, ref in enumerate(refs[:8]):
+                            ref_type = type(ref).__name__
+                            ref_repr = ""
+                            if isinstance(ref, dict):
+                                keys = list(ref.keys())[:5]
+                                ref_repr = f"keys={keys}"
+                                # dict가 어느 객체의 __dict__인지 찾기
+                                owners = gc.get_referrers(ref)
+                                for owner in owners[:3]:
+                                    if hasattr(owner, '__dict__') and owner.__dict__ is ref:
+                                        ref_repr += f" owner={type(owner).__name__}({getattr(owner, '__module__', '?')})"
+                                        break
+                            elif isinstance(ref, list):
+                                ref_repr = f"len={len(ref)}"
+                                owners = gc.get_referrers(ref)
+                                for owner in owners[:3]:
+                                    if isinstance(owner, dict):
+                                        for k, v in owner.items():
+                                            if v is ref:
+                                                ref_repr += f" in_dict_key='{k}'"
+                                                break
+                                    elif hasattr(owner, '__dict__'):
+                                        for k, v in vars(owner).items():
+                                            if v is ref:
+                                                ref_repr += f" attr={type(owner).__name__}.{k}"
+                                                break
+                            elif hasattr(ref, '__name__'):
+                                ref_repr = ref.__name__
+                            elif hasattr(ref, '__class__'):
+                                mod = getattr(ref.__class__, '__module__', '?')
+                                ref_repr = f"module={mod}"
+                            print(f"[V96]   ref#{ri}: {ref_type} {ref_repr}", flush=True)
+                    except Exception as re:
+                        print(f"[V96] tensor#{ti+1} referrer error: {re}", flush=True)
 
-                # comfy_aimdo 모듈 우선 스캔 (host/vram buffer)
-                priority_mods = ['comfy_aimdo', 'comfy_aimdo.host_buffer',
-                                 'comfy_aimdo.vram_buffer', 'comfy_aimdo.model_vbar',
-                                 'comfy.model_management', 'comfy.pinned_memory',
-                                 'comfy.model_prefetch']
-                for mod_name in priority_mods:
-                    mod = sys.modules.get(mod_name)
-                    if mod is None:
-                        continue
-                    visited = set()
-                    for attr in dir(mod):
-                        if attr.startswith('__'):
-                            continue
+                # 모듈 레벨 변수에서 역추적 (handler.py 전역 포함)
+                print(f"[V96] checking handler globals...", flush=True)
+                handler_mod = sys.modules.get('__main__') or sys.modules.get('handler')
+                if handler_mod:
+                    sample_id = id(sample)
+                    for attr in dir(handler_mod):
                         try:
-                            val = getattr(mod, attr, None)
-                            if val is None or callable(val):
+                            val = getattr(handler_mod, attr, None)
+                            if val is None:
                                 continue
-                            print(f"[V95] scanning {mod_name}.{attr} (type={type(val).__name__})", flush=True)
-                            _scan_obj(val, f"{mod_name}.{attr}", visited)
+                            if isinstance(val, torch.Tensor) and id(val) == sample_id:
+                                print(f"[V96] FOUND in handler globals: {attr}", flush=True)
+                            elif isinstance(val, dict):
+                                for k, v in val.items():
+                                    if isinstance(v, torch.Tensor) and id(v) == sample_id:
+                                        print(f"[V96] FOUND in handler.{attr}['{k}']", flush=True)
+                            elif isinstance(val, list):
+                                for i, v in enumerate(val):
+                                    if isinstance(v, torch.Tensor) and id(v) == sample_id:
+                                        print(f"[V96] FOUND in handler.{attr}[{i}]", flush=True)
                         except Exception:
                             pass
-                    if found_count[0] > 0:
-                        print(f"[V95] found {found_count[0]} tensors in {mod_name}", flush=True)
-                        break
-
-                # 못 찾으면 전체 comfy 모듈 스캔 (list/dict/object 모두)
-                if found_count[0] == 0:
-                    comfy_mods = {k: v for k, v in sys.modules.items()
-                                  if 'comfy' in k and v is not None}
-                    for mod_name, mod in comfy_mods.items():
-                        if mod_name in priority_mods:
-                            continue
-                        visited = set()
-                        try:
-                            for attr in dir(mod):
-                                if attr.startswith('__'):
-                                    continue
-                                val = getattr(mod, attr, None)
-                                if val is None or callable(val):
-                                    continue
-                                if isinstance(val, (list, dict)) or hasattr(val, '__dict__'):
-                                    _scan_obj(val, f"{mod_name}.{attr}", visited)
-                        except Exception:
-                            pass
-                        if found_count[0] > 0:
-                            print(f"[V95] found {found_count[0]} tensors in {mod_name}", flush=True)
-                            break
-
-                if found_count[0] == 0:
-                    print(f"[V95] NOT FOUND in any comfy module", flush=True)
-                    # refcount 출력
-                    import ctypes
-                    rc = ctypes.c_long.from_address(id(sample)).value
-                    print(f"[V95] sample refcount (ctypes): {rc}", flush=True)
-                else:
-                    print(f"[V95] total found: {found_count[0]}", flush=True)
 
         except Exception as e:
             import traceback
-            print(f"[V95] error: {e}\n{traceback.format_exc()}", flush=True)
+            print(f"[V96] error: {e}\n{traceback.format_exc()}", flush=True)
 
         _force_vram_free()
 
