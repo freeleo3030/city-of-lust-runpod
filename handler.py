@@ -6,7 +6,7 @@ import os
 import gc
 import tracemalloc
 
-print("handler.py starting... V95", flush=True)
+print("handler.py starting... V100", flush=True)
 
 # V89: IPA job 카운터 — 70개마다 worker 재시작 (503GB RAM / 5.8GB per job = ~86, 여유 16개)
 _ipa_job_count = 0
@@ -108,102 +108,56 @@ def _force_vram_free():
     gc.collect()
     torch.cuda.empty_cache()
 
-    # V86: async weight offloading cast buffer 클리어 (STREAM_CAST_BUFFERS 누수 방지)
     try:
         import comfy.model_management as mm
         if hasattr(mm, 'reset_cast_buffers'):
             mm.reset_cast_buffers()
-            print("[V86] reset_cast_buffers OK", flush=True)
-    except Exception as e:
-        print(f"[V86] reset_cast_buffers error: {e}", flush=True)
+    except Exception:
+        pass
 
-    # V87-A: CLIPVision을 current_loaded_models에서 제거 → ComfyUI offload 타깃 제외
-    # 목적: CLIPVision이 VRAM→CPU cast buffer로 offload되는 것 자체를 막음
-    # (reset_cast_buffers가 ModelPatcher 참조 때문에 해제 못하는 근본 원인 차단)
     try:
         import comfy.model_management as mm
         if loaded_clip_vision is not None:
-            before = len(mm.current_loaded_models)
-            # CLIPVision 모델이 current_loaded_models에 있으면 제거
             mm.current_loaded_models[:] = [
                 lm for lm in mm.current_loaded_models
                 if getattr(lm, 'model', None) is not loaded_clip_vision
                 and getattr(getattr(lm, 'model', None), 'load_model', None) is not loaded_clip_vision
                 and lm is not loaded_clip_vision
             ]
-            after = len(mm.current_loaded_models)
-            print(f"[V87-A] current_loaded_models: {before}→{after} (CLIPVision 제거)", flush=True)
-    except Exception as e:
-        print(f"[V87-A] error: {e}", flush=True)
+    except Exception:
+        pass
 
-    # V87-B: STREAM_CAST_BUFFERS 직접 접근하여 CLIPVision 관련 텐서만 강제 해제
     try:
         import comfy.model_management as mm
-        import torch
         if hasattr(mm, 'STREAM_CAST_BUFFERS') and mm.STREAM_CAST_BUFFERS:
-            before_count = len(mm.STREAM_CAST_BUFFERS)
-            before_gb = sum(t.element_size() * t.nelement() for t in mm.STREAM_CAST_BUFFERS) / 1024**3
-            # 전체 클리어 (reset_cast_buffers와 동일하지만 del로 실제 참조 제거)
             for t in list(mm.STREAM_CAST_BUFFERS):
                 del t
             mm.STREAM_CAST_BUFFERS.clear()
             gc.collect()
-            print(f"[V87-B] STREAM_CAST_BUFFERS cleared: {before_count}개 {before_gb:.2f}GB", flush=True)
-        else:
-            scb_count = len(mm.STREAM_CAST_BUFFERS) if hasattr(mm, 'STREAM_CAST_BUFFERS') else -1
-            print(f"[V87-B] STREAM_CAST_BUFFERS count={scb_count}", flush=True)
-    except Exception as e:
-        print(f"[V87-B] error: {e}", flush=True)
+    except Exception:
+        pass
 
-    # V87-C: gc 2차 collect + CPU tensor 총량 리포트
-    try:
-        import torch
-        gc.collect()
-        gc.collect()
-        all_cpu = [t for t in gc.get_objects() if isinstance(t, torch.Tensor) and not t.is_cuda]
-        total_gb = sum(t.element_size() * t.nelement() for t in all_cpu) / 1024**3
-        print(f"[V87-C] CPU tensors after full cleanup: {len(all_cpu)}개 {total_gb:.2f}GB", flush=True)
-    except Exception as e:
-        print(f"[V87-C] error: {e}", flush=True)
+    gc.collect()
+    gc.collect()
 
-    # V88: LoadedModel 내부 weight cache 강제 클리어
-    # async offloading이 float32 cast 텐서를 LoadedModel 내부 list에 보관하는 것 차단
     try:
         import comfy.model_management as mm
-        cleared_any = False
         for lm in mm.current_loaded_models:
-            # weights_loaded: async offloading이 loaded weight 참조를 추적하는 list
             for attr in ['weights_loaded', 'model_weights_loaded', '_weights', 'offload_weights',
                          'loaded_weights', 'cast_weights', 'stream_buffer', 'cpu_weights']:
                 obj = getattr(lm, attr, None)
-                if obj is not None and isinstance(obj, list) and len(obj) > 0:
-                    before_len = len(obj)
+                if obj is not None and isinstance(obj, (list, dict)) and len(obj) > 0:
                     obj.clear()
-                    print(f"[V88] lm.{attr} cleared: {before_len}개", flush=True)
-                    cleared_any = True
-                elif obj is not None and isinstance(obj, dict) and len(obj) > 0:
-                    before_len = len(obj)
-                    obj.clear()
-                    print(f"[V88] lm.{attr}(dict) cleared: {before_len}개", flush=True)
-                    cleared_any = True
-            # model 내부도 확인
             m = getattr(lm, 'model', None)
             if m is not None:
                 for attr in ['weights_loaded', 'offload_weights', 'cast_weights']:
                     obj2 = getattr(m, attr, None)
                     if obj2 is not None and isinstance(obj2, list) and len(obj2) > 0:
                         obj2.clear()
-                        print(f"[V88] lm.model.{attr} cleared", flush=True)
-                        cleared_any = True
-        if not cleared_any:
-            print(f"[V88] no weight cache found in {len(mm.current_loaded_models)} LoadedModels", flush=True)
         gc.collect()
         gc.collect()
-        all_cpu2 = [t for t in gc.get_objects() if isinstance(t, torch.Tensor) and not t.is_cuda]
-        total_gb2 = sum(t.element_size() * t.nelement() for t in all_cpu2) / 1024**3
-        print(f"[V88] CPU tensors after LoadedModel clear: {len(all_cpu2)}개 {total_gb2:.2f}GB", flush=True)
-    except Exception as e:
-        print(f"[V88] error: {e}", flush=True)
+    except Exception:
+        pass
 
     log_vram("after _force_vram_free")
 
@@ -215,14 +169,11 @@ def load_model():
     print("Loading ComfyUI modules...", flush=True)
     from nodes import CheckpointLoaderSimple
 
-    # vram_state 직접 LOW_VRAM으로 설정 (sys.argv 방식 이중 보장)
     try:
         import comfy.model_management as mm
-        print(f"[V64] vram_state before override: {mm.vram_state}", flush=True)
         mm.vram_state = mm.VRAMState.LOW_VRAM
-        print(f"[V64] vram_state after override: {mm.vram_state}", flush=True)
-    except Exception as e:
-        print(f"[V64] vram_state override failed: {e}", flush=True)
+    except Exception:
+        pass
 
     if not os.path.exists(MODEL_PATH):
         raise RuntimeError(f"Model not found: {MODEL_PATH}")
@@ -292,11 +243,6 @@ def ipadapter_img2img(prompt, negative_prompt, pose_image_b64, face_image_b64, w
     gc.collect()
     torch.cuda.empty_cache()
     torch.cuda.synchronize()
-    # V85: job 시작 전 CPU tensor id 스냅샷
-    try:
-        _before_tensor_ids = set(id(t) for t in gc.get_objects() if isinstance(t, torch.Tensor) and not t.is_cuda)
-    except Exception:
-        _before_tensor_ids = set()
     from PIL import Image
     from io import BytesIO
     from nodes import CLIPTextEncode, KSampler, VAEDecode, VAEEncode
@@ -387,72 +333,46 @@ def ipadapter_img2img(prompt, negative_prompt, pose_image_b64, face_image_b64, w
         # V81: model_with_ipa 내부 참조 완전 클리어
         try:
             import comfy.model_management as mm
-            before = len(mm.current_loaded_models)
             mm.current_loaded_models[:] = [
                 lm for lm in mm.current_loaded_models
                 if getattr(lm, 'model', None) is not model_with_ipa
                 and lm is not model_with_ipa
             ]
-            after = len(mm.current_loaded_models)
-            if before != after:
-                print(f"[V76] removed model_with_ipa: {before}→{after}", flush=True)
-        except Exception as e:
-            print(f"[V76] cleanup error: {e}", flush=True)
+        except Exception:
+            pass
 
         try:
             if hasattr(model_with_ipa, 'model_options') and isinstance(model_with_ipa.model_options, dict):
                 to = model_with_ipa.model_options.get('transformer_options', {})
                 to.clear()
-                model_with_ipa.model_options.clear()
             if hasattr(model_with_ipa, 'patches') and isinstance(model_with_ipa.patches, dict):
                 model_with_ipa.patches.clear()
             if hasattr(model_with_ipa, 'object_patches') and isinstance(model_with_ipa.object_patches, dict):
                 model_with_ipa.object_patches.clear()
             if hasattr(model_with_ipa, 'parent'):
                 model_with_ipa.parent = None
-            print("[V81] model_with_ipa cleared", flush=True)
-        except Exception as e:
-            print(f"[V81] clear error: {e}", flush=True)
+        except Exception:
+            pass
 
-        # V82: 원본 loaded_model에 누적된 patches/transformer_options 클리어
         try:
             lm_p = getattr(loaded_model, 'patches', None)
             lm_to = (getattr(loaded_model, 'model_options', {}) or {}).get('transformer_options', {})
-            n_p = len(lm_p) if lm_p else 0
-            n_to = len(lm_to) if lm_to else 0
-            print(f"[V82] loaded_model patches={n_p} transformer_options={n_to}", flush=True)
-            if n_p > 0:
+            if lm_p:
                 lm_p.clear()
-            if n_to > 0:
+            if lm_to:
                 lm_to.clear()
-        except Exception as e:
-            print(f"[V82] loaded_model cleanup error: {e}", flush=True)
+        except Exception:
+            pass
 
-        # V83: loaded_clip_vision patches/transformer_options 조사 + 클리어
         try:
             cv_p = getattr(loaded_clip_vision, 'patches', None)
             cv_to = (getattr(loaded_clip_vision, 'model_options', {}) or {}).get('transformer_options', {})
-            n_cvp = len(cv_p) if cv_p else 0
-            n_cvto = len(cv_to) if cv_to else 0
-            print(f"[V83] loaded_clip_vision patches={n_cvp} transformer_options={n_cvto}", flush=True)
-            if n_cvp > 0:
+            if cv_p:
                 cv_p.clear()
-            if n_cvto > 0:
+            if cv_to:
                 cv_to.clear()
-        except Exception as e:
-            print(f"[V83] clip_vision cleanup error: {e}", flush=True)
-
-        # V83: loaded_ipadapter 내부 구조 로깅
-        try:
-            if isinstance(loaded_ipadapter, dict):
-                ipa_keys = list(loaded_ipadapter.keys())
-                print(f"[V83] loaded_ipadapter keys={ipa_keys}", flush=True)
-            else:
-                ipa_p = getattr(loaded_ipadapter, 'patches', None)
-                n_ipap = len(ipa_p) if ipa_p else 0
-                print(f"[V83] loaded_ipadapter type={type(loaded_ipadapter).__name__} patches={n_ipap}", flush=True)
-        except Exception as e:
-            print(f"[V83] ipadapter inspect error: {e}", flush=True)
+        except Exception:
+            pass
 
         del model_with_ipa, positive, negative_cond, latent, ipa_node
         try:
@@ -461,72 +381,6 @@ def ipadapter_img2img(prompt, negative_prompt, pose_image_b64, face_image_b64, w
             pass
         del pose_tensor, face_tensor
         gc.collect()
-
-        # V85+V90: 누수 tensor → list → cell → 클로저 함수 역추적
-        try:
-            import comfy.model_management as _mm_diag
-            import types
-            all_cpu = [t for t in gc.get_objects() if isinstance(t, torch.Tensor) and not t.is_cuda]
-            new_tensors = [t for t in all_cpu if id(t) not in _before_tensor_ids]
-            print(f"[V85] new CPU tensors vs job start: {len(new_tensors)}개", flush=True)
-            if new_tensors:
-                new_tensors_sorted = sorted(new_tensors, key=lambda t: t.nelement() * t.element_size(), reverse=True)
-                sample = new_tensors_sorted[0]
-                mb = sample.element_size() * sample.nelement() / 1024**2
-                print(f"[V85] #1 shape={list(sample.shape)} dtype={sample.dtype} {mb:.1f}MB", flush=True)
-                refs = gc.get_referrers(sample)
-                for r in refs:
-                    if isinstance(r, list):
-                        list_owners = gc.get_referrers(r)
-                        for lo in list_owners[:6]:
-                            if isinstance(lo, types.CellType):
-                                # cell 소유자 함수 역추적
-                                cell_owners = gc.get_referrers(lo)
-                                for co in cell_owners[:4]:
-                                    if callable(co) and hasattr(co, '__name__'):
-                                        mod = getattr(co, '__module__', '?')
-                                        print(f"[V90] tensor→list→cell→func: {mod}.{co.__name__}", flush=True)
-                                    elif isinstance(co, tuple):
-                                        # __closure__ tuple — 소유 함수 찾기
-                                        closure_owners = gc.get_referrers(co)
-                                        for fo in closure_owners[:3]:
-                                            if callable(fo) and hasattr(fo, '__name__'):
-                                                mod = getattr(fo, '__module__', '?')
-                                                print(f"[V90] tensor→list→cell→closure→func: {mod}.{fo.__name__}", flush=True)
-                                            elif hasattr(fo, '__class__'):
-                                                print(f"[V90] tensor→list→cell→closure→{type(fo).__name__}", flush=True)
-                            elif isinstance(lo, dict):
-                                mm_vars = vars(_mm_diag)
-                                if lo is mm_vars:
-                                    matches = [k for k, v in mm_vars.items() if v is r]
-                                    print(f"[V90] tensor→list→mm.{matches}", flush=True)
-                                else:
-                                    dict_owners = gc.get_referrers(lo)
-                                    for do in dict_owners[:2]:
-                                        if hasattr(do, '__dict__') and do.__dict__ is lo:
-                                            attrs = [k for k, v in lo.items() if v is r]
-                                            print(f"[V90] tensor→list→{type(do).__name__}.{attrs}", flush=True)
-                                            break
-                                    else:
-                                        print(f"[V90] tensor→list→dict(keys={list(lo.keys())[:5]})", flush=True)
-                            elif isinstance(lo, type(_mm_diag)):
-                                print(f"[V90] tensor→list→module({lo.__name__})", flush=True)
-                            else:
-                                print(f"[V90] tensor→list→{type(lo).__name__}", flush=True)
-                    elif isinstance(r, dict):
-                        mm_vars = vars(_mm_diag)
-                        if r is mm_vars:
-                            matches = [k for k, v in mm_vars.items() if v is sample]
-                            print(f"[V90] tensor→directly in mm.{matches}", flush=True)
-                        else:
-                            print(f"[V90] tensor→dict(keys={list(r.keys())[:5]})", flush=True)
-                    elif isinstance(r, tuple):
-                        tuple_owners = gc.get_referrers(r)
-                        for to in tuple_owners[:2]:
-                            print(f"[V90] tensor→tuple→{type(to).__name__}", flush=True)
-        except Exception as e:
-            print(f"[V90] referrer error: {e}", flush=True)
-
         _force_vram_free()
 
 
@@ -538,12 +392,6 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
     gc.collect()
     torch.cuda.empty_cache()
     torch.cuda.synchronize()
-    # V85: job 시작 전 CPU tensor id 스냅샷
-    try:
-        _before_tensor_ids = set(id(t) for t in gc.get_objects() if isinstance(t, torch.Tensor) and not t.is_cuda)
-    except Exception:
-        _before_tensor_ids = set()
-
     # VRAM 여유 확인 — 2GB 미만이면 IPA 스킵
     free, total = torch.cuda.mem_get_info()
     free_gb = free / 1024 / 1024 / 1024
@@ -610,73 +458,46 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
         # V81: model_with_ipa 내부 참조 완전 클리어 (closure/embedding 해제)
         try:
             import comfy.model_management as mm
-            before = len(mm.current_loaded_models)
             mm.current_loaded_models[:] = [
                 lm for lm in mm.current_loaded_models
                 if getattr(lm, 'model', None) is not model_with_ipa
                 and lm is not model_with_ipa
             ]
-            after = len(mm.current_loaded_models)
-            if before != after:
-                print(f"[V76] removed model_with_ipa: {before}→{after}", flush=True)
-        except Exception as e:
-            print(f"[V76] cleanup error: {e}", flush=True)
+        except Exception:
+            pass
 
         try:
-            # V84: transformer_options 내용만 클리어, 키는 유지 (model_options.clear()하면 __del__이 KeyError로 죽어서 tensor 해제 안 됨)
             if hasattr(model_with_ipa, 'model_options') and isinstance(model_with_ipa.model_options, dict):
                 to = model_with_ipa.model_options.get('transformer_options', {})
                 to.clear()
-                # model_with_ipa.model_options.clear() ← 제거: transformer_options 키 자체를 지우면 __del__ KeyError
             if hasattr(model_with_ipa, 'patches') and isinstance(model_with_ipa.patches, dict):
                 model_with_ipa.patches.clear()
             if hasattr(model_with_ipa, 'object_patches') and isinstance(model_with_ipa.object_patches, dict):
                 model_with_ipa.object_patches.clear()
             if hasattr(model_with_ipa, 'parent'):
                 model_with_ipa.parent = None
-            print("[V84] model_with_ipa cleared", flush=True)
-        except Exception as e:
-            print(f"[V84] clear error: {e}", flush=True)
+        except Exception:
+            pass
 
-        # V82: 원본 loaded_model에 누적된 patches/transformer_options 클리어
         try:
             lm_p = getattr(loaded_model, 'patches', None)
             lm_to = (getattr(loaded_model, 'model_options', {}) or {}).get('transformer_options', {})
-            n_p = len(lm_p) if lm_p else 0
-            n_to = len(lm_to) if lm_to else 0
-            print(f"[V82] loaded_model patches={n_p} transformer_options={n_to}", flush=True)
-            if n_p > 0:
+            if lm_p:
                 lm_p.clear()
-            if n_to > 0:
+            if lm_to:
                 lm_to.clear()
-        except Exception as e:
-            print(f"[V82] loaded_model cleanup error: {e}", flush=True)
+        except Exception:
+            pass
 
-        # V83: loaded_clip_vision patches/transformer_options 조사 + 클리어
         try:
             cv_p = getattr(loaded_clip_vision, 'patches', None)
             cv_to = (getattr(loaded_clip_vision, 'model_options', {}) or {}).get('transformer_options', {})
-            n_cvp = len(cv_p) if cv_p else 0
-            n_cvto = len(cv_to) if cv_to else 0
-            print(f"[V83] loaded_clip_vision patches={n_cvp} transformer_options={n_cvto}", flush=True)
-            if n_cvp > 0:
+            if cv_p:
                 cv_p.clear()
-            if n_cvto > 0:
+            if cv_to:
                 cv_to.clear()
-        except Exception as e:
-            print(f"[V83] clip_vision cleanup error: {e}", flush=True)
-
-        # V83: loaded_ipadapter 내부 구조 로깅
-        try:
-            if isinstance(loaded_ipadapter, dict):
-                ipa_keys = list(loaded_ipadapter.keys())
-                print(f"[V83] loaded_ipadapter keys={ipa_keys}", flush=True)
-            else:
-                ipa_p = getattr(loaded_ipadapter, 'patches', None)
-                n_ipap = len(ipa_p) if ipa_p else 0
-                print(f"[V83] loaded_ipadapter type={type(loaded_ipadapter).__name__} patches={n_ipap}", flush=True)
-        except Exception as e:
-            print(f"[V83] ipadapter inspect error: {e}", flush=True)
+        except Exception:
+            pass
 
         del model_with_ipa, positive, negative_cond, latent, ipa_node
         try:
@@ -685,37 +506,6 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
             pass
         del face_tensor
         gc.collect()
-
-        try:
-            cpu_t = [o for o in gc.get_objects() if isinstance(o, torch.Tensor) and not o.is_cuda]
-            print(f"[V82] CPU tensors after del+collect: {len(cpu_t)}개 {sum(t.element_size()*t.nelement() for t in cpu_t)/1024**3:.2f}GB", flush=True)
-        except Exception:
-            pass
-
-        # V99: pinned_memory pool 강제 해제 시도
-        try:
-            import comfy.pinned_memory as pm
-            before_pm = len(getattr(pm, 'PINNED_MEMORY', {}))
-            if hasattr(pm, 'PINNED_MEMORY'):
-                pm.PINNED_MEMORY.clear()
-            after_pm = len(getattr(pm, 'PINNED_MEMORY', {}))
-            print(f"[V99] PINNED_MEMORY cleared: {before_pm}→{after_pm}개", flush=True)
-        except Exception as e:
-            print(f"[V99] pinned_memory clear error: {e}", flush=True)
-
-        try:
-            import comfy.model_management as mm
-            if hasattr(mm, 'PINNED_MEMORY'):
-                mm.PINNED_MEMORY.clear()
-                print(f"[V99] mm.PINNED_MEMORY cleared", flush=True)
-        except Exception as e:
-            print(f"[V99] mm.PINNED_MEMORY error: {e}", flush=True)
-
-        # RAM before/after 비교
-        import psutil, os
-        ram_mb = psutil.Process(os.getpid()).memory_info().rss / 1024**2
-        print(f"[V99] RAM after pinned_memory clear: {ram_mb:.0f}MB", flush=True)
-
         _force_vram_free()
 
 
@@ -983,13 +773,12 @@ def handler(job):
         _force_vram_free()
         log_mem_detail("after")
 
-        # V89: IPA job counter — 70개마다 worker 재시작 (503GB / 5.8GB ≈ 86개, 여유 16개)
         if mode == "ipadapter":
             global _ipa_job_count
             _ipa_job_count += 1
-            print(f"[V89] IPA job count: {_ipa_job_count}", flush=True)
-            if _ipa_job_count >= 20:
-                print(f"[V90] Job limit reached ({_ipa_job_count}), restarting worker...", flush=True)
+            print(f"[V100] IPA job count: {_ipa_job_count}/10", flush=True)
+            if _ipa_job_count >= 10:
+                print(f"[V100] Job limit reached, restarting worker...", flush=True)
                 import os
                 os._exit(0)
 
