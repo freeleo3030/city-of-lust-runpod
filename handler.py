@@ -6,7 +6,10 @@ import os
 import gc
 import tracemalloc
 
-print("handler.py starting... V88", flush=True)
+print("handler.py starting... V89", flush=True)
+
+# V89: IPA job 카운터 — 70개마다 worker 재시작 (503GB RAM / 5.8GB per job = ~86, 여유 16개)
+_ipa_job_count = 0
 
 import os
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
@@ -459,24 +462,51 @@ def ipadapter_img2img(prompt, negative_prompt, pose_image_b64, face_image_b64, w
         del pose_tensor, face_tensor
         gc.collect()
 
-        # V85: 누수 tensor referrer 진단
+        # V85+V89: 누수 tensor referrer 진단 + 소유자 역추적
         try:
+            import comfy.model_management as _mm_diag
             all_cpu = [t for t in gc.get_objects() if isinstance(t, torch.Tensor) and not t.is_cuda]
             new_tensors = [t for t in all_cpu if id(t) not in _before_tensor_ids]
             print(f"[V85] new CPU tensors vs job start: {len(new_tensors)}개", flush=True)
             if new_tensors:
                 new_tensors_sorted = sorted(new_tensors, key=lambda t: t.nelement() * t.element_size(), reverse=True)
-                for i, sample in enumerate(new_tensors_sorted[:3]):
-                    mb = sample.element_size() * sample.nelement() / 1024**2
-                    refs = gc.get_referrers(sample)
-                    ref_detail = []
-                    for r in refs:
-                        if isinstance(r, dict):
-                            ref_detail.append(f"dict(keys={list(r.keys())[:5]})")
+                sample = new_tensors_sorted[0]
+                mb = sample.element_size() * sample.nelement() / 1024**2
+                print(f"[V85] #1 shape={list(sample.shape)} dtype={sample.dtype} {mb:.1f}MB", flush=True)
+                refs = gc.get_referrers(sample)
+                for r in refs:
+                    if isinstance(r, list):
+                        list_owners = gc.get_referrers(r)
+                        for lo in list_owners[:4]:
+                            if isinstance(lo, dict):
+                                mm_vars = vars(_mm_diag)
+                                if lo is mm_vars:
+                                    matches = [k for k, v in mm_vars.items() if v is r]
+                                    print(f"[V89] tensor → list → mm.{matches}", flush=True)
+                                else:
+                                    dict_owners = gc.get_referrers(lo)
+                                    for do in dict_owners[:2]:
+                                        if hasattr(do, '__dict__') and do.__dict__ is lo:
+                                            attrs = [k for k, v in lo.items() if v is r]
+                                            print(f"[V89] tensor → list → {type(do).__name__}.{attrs}", flush=True)
+                                            break
+                                    else:
+                                        print(f"[V89] tensor → list → dict(keys={list(lo.keys())[:5]})", flush=True)
+                            elif isinstance(lo, type(_mm_diag)):
+                                print(f"[V89] tensor → list → module({lo.__name__})", flush=True)
+                            elif hasattr(lo, '__class__'):
+                                print(f"[V89] tensor → list → {type(lo).__name__}", flush=True)
+                    elif isinstance(r, dict):
+                        mm_vars = vars(_mm_diag)
+                        if r is mm_vars:
+                            matches = [k for k, v in mm_vars.items() if v is sample]
+                            print(f"[V89] tensor → directly in mm.{matches}", flush=True)
                         else:
-                            ref_detail.append(type(r).__name__)
-                    print(f"[V85] #{i+1} shape={list(sample.shape)} dtype={sample.dtype} {mb:.1f}MB", flush=True)
-                    print(f"[V85] #{i+1} referrers={ref_detail}", flush=True)
+                            print(f"[V85] referrer=dict(keys={list(r.keys())[:5]})", flush=True)
+                    elif isinstance(r, tuple):
+                        tuple_owners = gc.get_referrers(r)
+                        for to in tuple_owners[:2]:
+                            print(f"[V89] tensor → tuple → {type(to).__name__}", flush=True)
         except Exception as e:
             print(f"[V85] referrer error: {e}", flush=True)
 
@@ -645,26 +675,55 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
         except Exception:
             pass
 
-        # V85: 누수 tensor referrer 진단
+        # V85+V89: 누수 tensor referrer 진단 + 소유자 역추적
         try:
+            import comfy.model_management as _mm_diag
             all_cpu = [t for t in gc.get_objects() if isinstance(t, torch.Tensor) and not t.is_cuda]
             new_tensors = [t for t in all_cpu if id(t) not in _before_tensor_ids]
             print(f"[V85] new CPU tensors vs job start: {len(new_tensors)}개", flush=True)
             if new_tensors:
                 new_tensors_sorted = sorted(new_tensors, key=lambda t: t.nelement() * t.element_size(), reverse=True)
-                for i, sample in enumerate(new_tensors_sorted[:3]):
-                    mb = sample.element_size() * sample.nelement() / 1024**2
-                    refs = gc.get_referrers(sample)
-                    ref_types = [type(r).__name__ for r in refs]
-                    # dict referrer면 key 목록도 출력
-                    ref_detail = []
-                    for r in refs:
-                        if isinstance(r, dict):
-                            ref_detail.append(f"dict(keys={list(r.keys())[:5]})")
+                # 첫 번째 텐서만 깊이 역추적 (로그 과부하 방지)
+                sample = new_tensors_sorted[0]
+                mb = sample.element_size() * sample.nelement() / 1024**2
+                print(f"[V85] #1 shape={list(sample.shape)} dtype={sample.dtype} {mb:.1f}MB", flush=True)
+                refs = gc.get_referrers(sample)
+                for r in refs:
+                    if isinstance(r, list):
+                        # V89: 이 list를 소유한 객체 역추적
+                        list_owners = gc.get_referrers(r)
+                        for lo in list_owners[:4]:
+                            if isinstance(lo, dict):
+                                # mm 모듈의 globals dict인지 확인
+                                mm_vars = vars(_mm_diag)
+                                if lo is mm_vars:
+                                    matches = [k for k, v in mm_vars.items() if v is r]
+                                    print(f"[V89] tensor → list → mm.{matches}", flush=True)
+                                else:
+                                    # 어떤 객체의 __dict__인지 찾기
+                                    dict_owners = gc.get_referrers(lo)
+                                    for do in dict_owners[:2]:
+                                        if hasattr(do, '__dict__') and do.__dict__ is lo:
+                                            attrs = [k for k, v in lo.items() if v is r]
+                                            print(f"[V89] tensor → list → {type(do).__name__}.{attrs}", flush=True)
+                                            break
+                                    else:
+                                        print(f"[V89] tensor → list → dict(keys={list(lo.keys())[:5]})", flush=True)
+                            elif isinstance(lo, type(_mm_diag)):
+                                print(f"[V89] tensor → list → module({lo.__name__})", flush=True)
+                            elif hasattr(lo, '__class__'):
+                                print(f"[V89] tensor → list → {type(lo).__name__}", flush=True)
+                    elif isinstance(r, dict):
+                        mm_vars = vars(_mm_diag)
+                        if r is mm_vars:
+                            matches = [k for k, v in mm_vars.items() if v is sample]
+                            print(f"[V89] tensor → directly in mm.{matches}", flush=True)
                         else:
-                            ref_detail.append(type(r).__name__)
-                    print(f"[V85] #{i+1} shape={list(sample.shape)} dtype={sample.dtype} {mb:.1f}MB", flush=True)
-                    print(f"[V85] #{i+1} referrers={ref_detail}", flush=True)
+                            print(f"[V85] referrer=dict(keys={list(r.keys())[:5]})", flush=True)
+                    elif isinstance(r, tuple):
+                        tuple_owners = gc.get_referrers(r)
+                        for to in tuple_owners[:2]:
+                            print(f"[V89] tensor → tuple → {type(to).__name__}", flush=True)
         except Exception as e:
             print(f"[V85] referrer error: {e}", flush=True)
 
@@ -934,6 +993,17 @@ def handler(job):
             pass
         _force_vram_free()
         log_mem_detail("after")
+
+        # V89: IPA job counter — 70개마다 worker 재시작 (503GB / 5.8GB ≈ 86개, 여유 16개)
+        if mode == "ipadapter":
+            global _ipa_job_count
+            _ipa_job_count += 1
+            print(f"[V89] IPA job count: {_ipa_job_count}", flush=True)
+            if _ipa_job_count >= 70:
+                print(f"[V89] Job limit reached ({_ipa_job_count}), restarting worker...", flush=True)
+                import os
+                os._exit(0)
+
         return {"image": image_b64, "status": "success"}
 
     except Exception as e:
