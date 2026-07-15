@@ -6,7 +6,7 @@ import os
 import gc
 import tracemalloc
 
-print("handler.py starting... V90", flush=True)
+print("handler.py starting... V91", flush=True)
 
 # V89: IPA job 카운터 — 70개마다 worker 재시작 (503GB RAM / 5.8GB per job = ~86, 여유 16개)
 _ipa_job_count = 0
@@ -1016,8 +1016,8 @@ def handler(job):
             global _ipa_job_count
             _ipa_job_count += 1
             print(f"[V89] IPA job count: {_ipa_job_count}", flush=True)
-            if _ipa_job_count >= 70:
-                print(f"[V89] Job limit reached ({_ipa_job_count}), restarting worker...", flush=True)
+            if _ipa_job_count >= 20:
+                print(f"[V90] Job limit reached ({_ipa_job_count}), restarting worker...", flush=True)
                 import os
                 os._exit(0)
 
