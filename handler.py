@@ -6,7 +6,7 @@ import os
 import gc
 import tracemalloc
 
-print("handler.py starting... V93", flush=True)
+print("handler.py starting... V94", flush=True)
 
 # V89: IPA job 카운터 — 70개마다 worker 재시작 (503GB RAM / 5.8GB per job = ~86, 여유 16개)
 _ipa_job_count = 0
@@ -692,82 +692,81 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
         except Exception:
             pass
 
-        # V93: list 체인을 끝까지 따라가서 최상위 소유자 찾기
+        # V94: model_management 직접 스캔으로 누수 텐서 소유자 찾기
         try:
-            import comfy.model_management as _mm_diag
-            import types
-
-            def _describe_owner(obj, path, mm_diag):
-                """list가 아닌 소유자를 만나면 타입/이름 출력"""
-                if isinstance(obj, types.CellType):
-                    cell_owners = gc.get_referrers(obj)
-                    for co in cell_owners[:3]:
-                        if callable(co) and hasattr(co, '__name__'):
-                            mod = getattr(co, '__module__', '?')
-                            print(f"[V93] {path}→cell→func: {mod}.{co.__name__}", flush=True)
-                        elif isinstance(co, tuple):
-                            for fo in gc.get_referrers(co)[:2]:
-                                if callable(fo) and hasattr(fo, '__name__'):
-                                    mod = getattr(fo, '__module__', '?')
-                                    print(f"[V93] {path}→cell→closure→func: {mod}.{fo.__name__}", flush=True)
-                elif isinstance(obj, dict):
-                    mm_vars = vars(mm_diag)
-                    if obj is mm_vars:
-                        print(f"[V93] {path}→mm_module_dict", flush=True)
-                    else:
-                        owners = gc.get_referrers(obj)
-                        for do in owners[:2]:
-                            if hasattr(do, '__dict__') and do.__dict__ is obj:
-                                print(f"[V93] {path}→{type(do).__module__}.{type(do).__name__}", flush=True)
-                                break
-                        else:
-                            print(f"[V93] {path}→dict(keys={list(obj.keys())[:4]})", flush=True)
-                elif hasattr(obj, '__module__') and hasattr(obj, '__name__'):
-                    print(f"[V93] {path}→func: {obj.__module__}.{obj.__name__}", flush=True)
-                elif hasattr(obj, '__class__'):
-                    mod = getattr(type(obj), '__module__', '?')
-                    print(f"[V93] {path}→{mod}.{type(obj).__name__}", flush=True)
-
-            def _trace_list_chain(lst, path, mm_diag, depth=0):
-                """list 체인을 최대 10단계까지 재귀 추적"""
-                if depth >= 10:
-                    print(f"[V93] {path}→...(depth limit)", flush=True)
-                    return
-                owners = gc.get_referrers(lst)
-                for owner in owners[:4]:
-                    if isinstance(owner, list):
-                        _trace_list_chain(owner, path + "→list", mm_diag, depth + 1)
-                    elif isinstance(owner, list.__class__) and type(owner).__name__ == 'list_iterator':
-                        continue  # iterator는 스킵
-                    else:
-                        _describe_owner(owner, path, mm_diag)
+            import comfy.model_management as _mm
+            import sys
 
             all_cpu = [t for t in gc.get_objects() if isinstance(t, torch.Tensor) and not t.is_cuda]
             new_tensors = [t for t in all_cpu if id(t) not in _before_tensor_ids]
-            print(f"[V85] new CPU tensors vs job start: {len(new_tensors)}개", flush=True)
+            print(f"[V94] new CPU tensors: {len(new_tensors)}개", flush=True)
+
             if new_tensors:
                 new_tensors_sorted = sorted(new_tensors, key=lambda t: t.nelement() * t.element_size(), reverse=True)
                 sample = new_tensors_sorted[0]
                 mb = sample.element_size() * sample.nelement() / 1024**2
-                print(f"[V85] #1 shape={list(sample.shape)} dtype={sample.dtype} {mb:.1f}MB", flush=True)
-                refs = gc.get_referrers(sample)
-                for r in refs:
-                    if isinstance(r, list):
-                        _trace_list_chain(r, "tensor→list", _mm_diag)
-                    elif isinstance(r, dict):
-                        mm_vars = vars(_mm_diag)
-                        if r is mm_vars:
-                            matches = [k for k, v in mm_vars.items() if v is sample]
-                            print(f"[V93] tensor→mm.{matches}", flush=True)
-                        else:
-                            print(f"[V93] tensor→dict(keys={list(r.keys())[:5]})", flush=True)
-                    elif isinstance(r, tuple):
-                        for to in gc.get_referrers(r)[:2]:
-                            _describe_owner(to, "tensor→tuple", _mm_diag)
-                    else:
-                        _describe_owner(r, "tensor", _mm_diag)
+                print(f"[V94] #1 shape={list(sample.shape)} dtype={sample.dtype} {mb:.1f}MB", flush=True)
+
+                leak_ids = {id(t) for t in new_tensors}
+
+                # 1) model_management 모듈 변수 직접 스캔
+                def _scan_obj(obj, path, visited=None, depth=0):
+                    if visited is None:
+                        visited = set()
+                    oid = id(obj)
+                    if oid in visited or depth > 6:
+                        return
+                    visited.add(oid)
+                    if isinstance(obj, torch.Tensor):
+                        if id(obj) in leak_ids:
+                            print(f"[V94] FOUND leak tensor at: {path}", flush=True)
+                        return
+                    if isinstance(obj, list):
+                        for i, item in enumerate(obj):
+                            _scan_obj(item, f"{path}[{i}]", visited, depth+1)
+                    elif isinstance(obj, dict):
+                        for k, v in obj.items():
+                            _scan_obj(v, f"{path}.{k}", visited, depth+1)
+                    elif hasattr(obj, '__dict__'):
+                        for k, v in vars(obj).items():
+                            _scan_obj(v, f"{path}.{k}", visited, depth+1)
+
+                # mm 모듈 최상위 변수 스캔
+                for attr in ['current_loaded_models', 'loaded_models', 'models',
+                             'current_gpu_controlnets', 'loaded_objects']:
+                    if hasattr(_mm, attr):
+                        val = getattr(_mm, attr)
+                        print(f"[V94] scanning mm.{attr} (type={type(val).__name__})", flush=True)
+                        _scan_obj(val, f"mm.{attr}")
+
+                # mm 모듈 전체 변수 스캔 (list/dict 타입만)
+                for attr in dir(_mm):
+                    if attr.startswith('_'):
+                        continue
+                    try:
+                        val = getattr(_mm, attr)
+                        if isinstance(val, (list, dict)) and not callable(val):
+                            _scan_obj(val, f"mm.{attr}")
+                    except Exception:
+                        pass
+
+                # 2) sys.modules에서 comfy 관련 모듈 스캔
+                comfy_mods = {k: v for k, v in sys.modules.items() if 'comfy' in k and v is not None}
+                print(f"[V94] comfy modules: {list(comfy_mods.keys())}", flush=True)
+                for mod_name, mod in comfy_mods.items():
+                    try:
+                        for attr in dir(mod):
+                            if attr.startswith('_'):
+                                continue
+                            val = getattr(mod, attr, None)
+                            if isinstance(val, list) and len(val) > 0:
+                                _scan_obj(val, f"{mod_name}.{attr}")
+                    except Exception:
+                        pass
+
+                print(f"[V94] scan complete", flush=True)
         except Exception as e:
-            print(f"[V93] referrer error: {e}", flush=True)
+            print(f"[V94] error: {e}", flush=True)
 
         _force_vram_free()
 
