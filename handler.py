@@ -6,7 +6,7 @@ import os
 import gc
 import tracemalloc
 
-print("handler.py starting... V94", flush=True)
+print("handler.py starting... V95", flush=True)
 
 # V89: IPA job 카운터 — 70개마다 worker 재시작 (503GB RAM / 5.8GB per job = ~86, 여유 16개)
 _ipa_job_count = 0
@@ -692,81 +692,108 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
         except Exception:
             pass
 
-        # V94: model_management 직접 스캔으로 누수 텐서 소유자 찾기
+        # V95: comfy_aimdo host/vram buffer 포함 전체 타입 스캔
         try:
             import comfy.model_management as _mm
             import sys
 
             all_cpu = [t for t in gc.get_objects() if isinstance(t, torch.Tensor) and not t.is_cuda]
             new_tensors = [t for t in all_cpu if id(t) not in _before_tensor_ids]
-            print(f"[V94] new CPU tensors: {len(new_tensors)}개", flush=True)
+            print(f"[V95] new CPU tensors: {len(new_tensors)}개", flush=True)
 
             if new_tensors:
                 new_tensors_sorted = sorted(new_tensors, key=lambda t: t.nelement() * t.element_size(), reverse=True)
                 sample = new_tensors_sorted[0]
                 mb = sample.element_size() * sample.nelement() / 1024**2
-                print(f"[V94] #1 shape={list(sample.shape)} dtype={sample.dtype} {mb:.1f}MB", flush=True)
+                print(f"[V95] #1 shape={list(sample.shape)} dtype={sample.dtype} {mb:.1f}MB", flush=True)
 
                 leak_ids = {id(t) for t in new_tensors}
+                found_count = [0]
 
-                # 1) model_management 모듈 변수 직접 스캔
-                def _scan_obj(obj, path, visited=None, depth=0):
-                    if visited is None:
-                        visited = set()
+                def _scan_obj(obj, path, visited, depth=0):
                     oid = id(obj)
-                    if oid in visited or depth > 6:
+                    if oid in visited or depth > 8:
                         return
                     visited.add(oid)
                     if isinstance(obj, torch.Tensor):
                         if id(obj) in leak_ids:
-                            print(f"[V94] FOUND leak tensor at: {path}", flush=True)
+                            found_count[0] += 1
+                            if found_count[0] <= 5:
+                                print(f"[V95] FOUND at: {path}", flush=True)
                         return
-                    if isinstance(obj, list):
-                        for i, item in enumerate(obj):
-                            _scan_obj(item, f"{path}[{i}]", visited, depth+1)
-                    elif isinstance(obj, dict):
-                        for k, v in obj.items():
-                            _scan_obj(v, f"{path}.{k}", visited, depth+1)
-                    elif hasattr(obj, '__dict__'):
-                        for k, v in vars(obj).items():
-                            _scan_obj(v, f"{path}.{k}", visited, depth+1)
+                    try:
+                        if isinstance(obj, list):
+                            for i, item in enumerate(obj[:50]):
+                                _scan_obj(item, f"{path}[{i}]", visited, depth+1)
+                        elif isinstance(obj, dict):
+                            for k, v in list(obj.items())[:50]:
+                                _scan_obj(v, f"{path}['{k}']", visited, depth+1)
+                        elif hasattr(obj, '__dict__'):
+                            for k, v in list(vars(obj).items())[:50]:
+                                _scan_obj(v, f"{path}.{k}", visited, depth+1)
+                    except Exception:
+                        pass
 
-                # mm 모듈 최상위 변수 스캔
-                for attr in ['current_loaded_models', 'loaded_models', 'models',
-                             'current_gpu_controlnets', 'loaded_objects']:
-                    if hasattr(_mm, attr):
-                        val = getattr(_mm, attr)
-                        print(f"[V94] scanning mm.{attr} (type={type(val).__name__})", flush=True)
-                        _scan_obj(val, f"mm.{attr}")
-
-                # mm 모듈 전체 변수 스캔 (list/dict 타입만)
-                for attr in dir(_mm):
-                    if attr.startswith('_'):
+                # comfy_aimdo 모듈 우선 스캔 (host/vram buffer)
+                priority_mods = ['comfy_aimdo', 'comfy_aimdo.host_buffer',
+                                 'comfy_aimdo.vram_buffer', 'comfy_aimdo.model_vbar',
+                                 'comfy.model_management', 'comfy.pinned_memory',
+                                 'comfy.model_prefetch']
+                for mod_name in priority_mods:
+                    mod = sys.modules.get(mod_name)
+                    if mod is None:
                         continue
-                    try:
-                        val = getattr(_mm, attr)
-                        if isinstance(val, (list, dict)) and not callable(val):
-                            _scan_obj(val, f"mm.{attr}")
-                    except Exception:
-                        pass
-
-                # 2) sys.modules에서 comfy 관련 모듈 스캔
-                comfy_mods = {k: v for k, v in sys.modules.items() if 'comfy' in k and v is not None}
-                print(f"[V94] comfy modules: {list(comfy_mods.keys())}", flush=True)
-                for mod_name, mod in comfy_mods.items():
-                    try:
-                        for attr in dir(mod):
-                            if attr.startswith('_'):
-                                continue
+                    visited = set()
+                    for attr in dir(mod):
+                        if attr.startswith('__'):
+                            continue
+                        try:
                             val = getattr(mod, attr, None)
-                            if isinstance(val, list) and len(val) > 0:
-                                _scan_obj(val, f"{mod_name}.{attr}")
-                    except Exception:
-                        pass
+                            if val is None or callable(val):
+                                continue
+                            print(f"[V95] scanning {mod_name}.{attr} (type={type(val).__name__})", flush=True)
+                            _scan_obj(val, f"{mod_name}.{attr}", visited)
+                        except Exception:
+                            pass
+                    if found_count[0] > 0:
+                        print(f"[V95] found {found_count[0]} tensors in {mod_name}", flush=True)
+                        break
 
-                print(f"[V94] scan complete", flush=True)
+                # 못 찾으면 전체 comfy 모듈 스캔 (list/dict/object 모두)
+                if found_count[0] == 0:
+                    comfy_mods = {k: v for k, v in sys.modules.items()
+                                  if 'comfy' in k and v is not None}
+                    for mod_name, mod in comfy_mods.items():
+                        if mod_name in priority_mods:
+                            continue
+                        visited = set()
+                        try:
+                            for attr in dir(mod):
+                                if attr.startswith('__'):
+                                    continue
+                                val = getattr(mod, attr, None)
+                                if val is None or callable(val):
+                                    continue
+                                if isinstance(val, (list, dict)) or hasattr(val, '__dict__'):
+                                    _scan_obj(val, f"{mod_name}.{attr}", visited)
+                        except Exception:
+                            pass
+                        if found_count[0] > 0:
+                            print(f"[V95] found {found_count[0]} tensors in {mod_name}", flush=True)
+                            break
+
+                if found_count[0] == 0:
+                    print(f"[V95] NOT FOUND in any comfy module", flush=True)
+                    # refcount 출력
+                    import ctypes
+                    rc = ctypes.c_long.from_address(id(sample)).value
+                    print(f"[V95] sample refcount (ctypes): {rc}", flush=True)
+                else:
+                    print(f"[V95] total found: {found_count[0]}", flush=True)
+
         except Exception as e:
-            print(f"[V94] error: {e}", flush=True)
+            import traceback
+            print(f"[V95] error: {e}\n{traceback.format_exc()}", flush=True)
 
         _force_vram_free()
 
