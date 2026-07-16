@@ -776,8 +776,8 @@ def handler(job):
         if mode == "ipadapter":
             global _ipa_job_count
             _ipa_job_count += 1
-            print(f"[V100] IPA job count: {_ipa_job_count}/10", flush=True)
-            if _ipa_job_count >= 10:
+            print(f"[V100] IPA job count: {_ipa_job_count}/20", flush=True)
+            if _ipa_job_count >= 20:
                 print(f"[V100] Job limit reached, restarting worker...", flush=True)
                 import os
                 os._exit(0)
