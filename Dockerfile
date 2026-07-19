@@ -17,8 +17,8 @@ RUN git clone https://github.com/cubiq/ComfyUI_IPAdapter_plus.git \
     /comfyui/custom_nodes/ComfyUI_IPAdapter_plus && \
     pip install --no-cache-dir -r /comfyui/custom_nodes/ComfyUI_IPAdapter_plus/requirements.txt || true
 
-# runpod + requests
-RUN pip install --no-cache-dir runpod requests Pillow
+# runpod + requests + accelerate (SDXL 필수)
+RUN pip install --no-cache-dir runpod requests Pillow accelerate
 
 COPY handler.py /handler.py
 COPY start.sh /start.sh
