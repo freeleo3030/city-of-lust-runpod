@@ -2,38 +2,41 @@
 
 VOLUME_DIR="/runpod-volume"
 MODEL_DIR="/comfyui/models/checkpoints"
-CN_DIR="/comfyui/models/controlnet"
-
-# 체크포인트 모델 링크
-mkdir -p "$MODEL_DIR"
-if [ -f "${VOLUME_DIR}/chilloutmix.safetensors" ]; then
-    ln -sf "${VOLUME_DIR}/chilloutmix.safetensors" "${MODEL_DIR}/chilloutmix.safetensors"
-fi
-
-# ControlNet 모델 링크
-mkdir -p "$CN_DIR"
-if [ -f "${VOLUME_DIR}/control_v11p_sd15_openpose.safetensors" ]; then
-    ln -sf "${VOLUME_DIR}/control_v11p_sd15_openpose.safetensors" "${CN_DIR}/control_v11p_sd15_openpose.safetensors"
-    echo "ControlNet model linked."
-elif [ -f "${VOLUME_DIR}/control_v11p_sd15_openpose.pth" ]; then
-    ln -sf "${VOLUME_DIR}/control_v11p_sd15_openpose.pth" "${CN_DIR}/control_v11p_sd15_openpose.pth"
-    echo "ControlNet model (pth) linked."
-else
-    echo "WARNING: ControlNet model not found in volume."
-fi
-
-# IP-Adapter 모델 링크
 IPA_DIR="/comfyui/models/ipadapter"
 CLIP_DIR="/comfyui/models/clip_vision"
-mkdir -p "$IPA_DIR" "$CLIP_DIR"
-if [ -f "${VOLUME_DIR}/ip-adapter-plus-face_sd15.safetensors" ]; then
-    ln -sf "${VOLUME_DIR}/ip-adapter-plus-face_sd15.safetensors" "${IPA_DIR}/ip-adapter-plus-face_sd15.safetensors"
-    echo "IP-Adapter model linked."
-elif [ -f "${VOLUME_DIR}/ip-adapter-plus-face_sd15.bin" ]; then
-    ln -sf "${VOLUME_DIR}/ip-adapter-plus-face_sd15.bin" "${IPA_DIR}/ip-adapter-plus-face_sd15.bin"
-    echo "IP-Adapter model linked (bin)."
+
+# Juggernaut XL Ragnarok 체크포인트 링크
+mkdir -p "$MODEL_DIR"
+if [ -f "${VOLUME_DIR}/juggernaut_xl_ragnarok.safetensors" ]; then
+    ln -sf "${VOLUME_DIR}/juggernaut_xl_ragnarok.safetensors" "${MODEL_DIR}/juggernaut_xl_ragnarok.safetensors"
+    echo "Juggernaut XL Ragnarok linked."
+else
+    echo "Juggernaut XL Ragnarok not found. Downloading from HuggingFace (~7GB)..."
+    wget -q --show-progress \
+        "https://huggingface.co/modelzpalace/juggernautXL_ragnarok/resolve/main/juggernautXL_ragnarokBy.safetensors" \
+        -O "${VOLUME_DIR}/juggernaut_xl_ragnarok.safetensors"
+    ln -sf "${VOLUME_DIR}/juggernaut_xl_ragnarok.safetensors" "${MODEL_DIR}/juggernaut_xl_ragnarok.safetensors"
+    echo "Juggernaut XL Ragnarok downloaded and linked."
 fi
-# ViT-H (1280-dim) — ip-adapter-plus-face_sd15와 매칭
+
+# IP-Adapter SDXL Face 모델 링크
+mkdir -p "$IPA_DIR" "$CLIP_DIR"
+if [ -f "${VOLUME_DIR}/ip-adapter-plus-face_sdxl_vit-h.safetensors" ]; then
+    ln -sf "${VOLUME_DIR}/ip-adapter-plus-face_sdxl_vit-h.safetensors" "${IPA_DIR}/ip-adapter-plus-face_sdxl_vit-h.safetensors"
+    echo "IP-Adapter SDXL linked."
+elif [ -f "${VOLUME_DIR}/ip-adapter-plus-face_sdxl_vit-h.bin" ]; then
+    ln -sf "${VOLUME_DIR}/ip-adapter-plus-face_sdxl_vit-h.bin" "${IPA_DIR}/ip-adapter-plus-face_sdxl_vit-h.bin"
+    echo "IP-Adapter SDXL linked (bin)."
+else
+    echo "WARNING: IP-Adapter SDXL model not found. Downloading..."
+    wget -q --show-progress \
+        "https://huggingface.co/h94/IP-Adapter/resolve/main/sdxl_models/ip-adapter-plus-face_sdxl_vit-h.safetensors" \
+        -O "${VOLUME_DIR}/ip-adapter-plus-face_sdxl_vit-h.safetensors"
+    ln -sf "${VOLUME_DIR}/ip-adapter-plus-face_sdxl_vit-h.safetensors" "${IPA_DIR}/ip-adapter-plus-face_sdxl_vit-h.safetensors"
+    echo "IP-Adapter SDXL downloaded and linked."
+fi
+
+# CLIP ViT-H-14 (SDXL IPAdapter에서도 동일 모델 사용)
 CLIP_H_PATH="${VOLUME_DIR}/clip-vit-h-14.safetensors"
 if [ ! -f "${CLIP_H_PATH}" ]; then
     echo "Downloading CLIP ViT-H-14 (~2.5GB)..."
@@ -44,11 +47,6 @@ if [ ! -f "${CLIP_H_PATH}" ]; then
 fi
 ln -sf "${CLIP_H_PATH}" "${CLIP_DIR}/clip-vit-h-14.safetensors"
 echo "CLIP Vision (ViT-H-14) linked."
-
-# 구버전 ViT-L 링크도 유지 (fallback용)
-if [ -f "${VOLUME_DIR}/clip-vit-large-patch14.bin" ]; then
-    ln -sf "${VOLUME_DIR}/clip-vit-large-patch14.bin" "${CLIP_DIR}/clip-vit-large-patch14.bin"
-fi
 
 echo "Starting handler..."
 python -u /handler.py
