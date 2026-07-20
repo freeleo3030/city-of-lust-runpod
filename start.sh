@@ -7,15 +7,27 @@ CLIP_DIR="/comfyui/models/clip_vision"
 
 # Juggernaut XL Ragnarok 체크포인트 링크
 mkdir -p "$MODEL_DIR"
-if [ -f "${VOLUME_DIR}/juggernaut_xl_ragnarok.safetensors" ]; then
-    ln -sf "${VOLUME_DIR}/juggernaut_xl_ragnarok.safetensors" "${MODEL_DIR}/juggernaut_xl_ragnarok.safetensors"
-    echo "Juggernaut XL Ragnarok linked."
+JUGGERNAUT_FILE="${VOLUME_DIR}/juggernaut_xl_ragnarok.safetensors"
+MIN_SIZE=$((5 * 1024 * 1024 * 1024))  # 5GB 미만이면 손상된 파일로 간주
+FILE_SIZE=0
+if [ -f "$JUGGERNAUT_FILE" ]; then
+    FILE_SIZE=$(stat -c%s "$JUGGERNAUT_FILE" 2>/dev/null || echo 0)
+fi
+
+if [ -f "$JUGGERNAUT_FILE" ] && [ "$FILE_SIZE" -ge "$MIN_SIZE" ]; then
+    ln -sf "$JUGGERNAUT_FILE" "${MODEL_DIR}/juggernaut_xl_ragnarok.safetensors"
+    echo "Juggernaut XL Ragnarok linked (${FILE_SIZE} bytes)."
 else
-    echo "Juggernaut XL Ragnarok not found. Downloading from HuggingFace (~7GB)..."
+    if [ -f "$JUGGERNAUT_FILE" ]; then
+        echo "Juggernaut XL: file exists but incomplete (${FILE_SIZE} bytes). Removing and re-downloading..."
+        rm -f "$JUGGERNAUT_FILE"
+    else
+        echo "Juggernaut XL Ragnarok not found. Downloading from HuggingFace (~7GB)..."
+    fi
     wget -q --show-progress \
         "https://huggingface.co/modelzpalace/juggernautXL_ragnarok/resolve/main/juggernautXL_ragnarokBy.safetensors" \
-        -O "${VOLUME_DIR}/juggernaut_xl_ragnarok.safetensors"
-    ln -sf "${VOLUME_DIR}/juggernaut_xl_ragnarok.safetensors" "${MODEL_DIR}/juggernaut_xl_ragnarok.safetensors"
+        -O "$JUGGERNAUT_FILE"
+    ln -sf "$JUGGERNAUT_FILE" "${MODEL_DIR}/juggernaut_xl_ragnarok.safetensors"
     echo "Juggernaut XL Ragnarok downloaded and linked."
 fi
 
