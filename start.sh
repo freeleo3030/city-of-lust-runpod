@@ -15,13 +15,15 @@ if [ -f "$JUGGERNAUT_FILE" ]; then
 fi
 
 download_juggernaut() {
+    echo "Volume disk usage before download:"
+    df -h /runpod-volume || true
     # CivitAI (API 키 필요)
     if [ -n "$CIVITAI_TOKEN" ]; then
-        echo "Downloading Juggernaut XL Ragnarok from CivitAI..."
-        curl -L --retry 2 --retry-delay 5 --connect-timeout 60 \
-            -H "Authorization: Bearer $CIVITAI_TOKEN" \
+        echo "Downloading Juggernaut XL Ragnarok from CivitAI (wget)..."
+        wget -q --show-progress --tries=1 \
+            --header="Authorization: Bearer $CIVITAI_TOKEN" \
             "https://civitai.com/api/download/models/357609" \
-            -o "$JUGGERNAUT_FILE"
+            -O "$JUGGERNAUT_FILE"
         local sz
         sz=$(stat -c%s "$JUGGERNAUT_FILE" 2>/dev/null || echo 0)
         if [ "$sz" -ge "$MIN_SIZE" ]; then
