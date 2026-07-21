@@ -15,25 +15,26 @@ if [ -f "$JUGGERNAUT_FILE" ]; then
 fi
 
 download_juggernaut() {
-    local URLS=(
-        "https://huggingface.co/prolapse/xl4supir/resolve/main/juggernautXL_ragnarok.safetensors"
-        "https://civitai.com/api/download/models/357609"
-    )
-    for url in "${URLS[@]}"; do
-        echo "Downloading Juggernaut XL Ragnarok from: $url"
-        wget -q --show-progress --tries=2 --timeout=120 \
-            "$url" -O "$JUGGERNAUT_FILE"
+    # CivitAI (API 키 필요)
+    if [ -n "$CIVITAI_TOKEN" ]; then
+        echo "Downloading Juggernaut XL Ragnarok from CivitAI..."
+        curl -L --retry 2 --retry-delay 5 --connect-timeout 60 \
+            -H "Authorization: Bearer $CIVITAI_TOKEN" \
+            "https://civitai.com/api/download/models/357609" \
+            -o "$JUGGERNAUT_FILE"
         local sz
         sz=$(stat -c%s "$JUGGERNAUT_FILE" 2>/dev/null || echo 0)
         if [ "$sz" -ge "$MIN_SIZE" ]; then
             echo "Download OK (${sz} bytes)."
             return 0
         else
-            echo "Incomplete download (${sz} bytes). Trying next source..."
+            echo "CivitAI download incomplete (${sz} bytes)."
             rm -f "$JUGGERNAUT_FILE"
         fi
-    done
-    echo "ERROR: All Juggernaut XL download sources failed!"
+    else
+        echo "WARNING: CIVITAI_TOKEN not set. Skipping CivitAI download."
+    fi
+    echo "ERROR: Juggernaut XL download failed. Set CIVITAI_TOKEN env var."
     return 1
 }
 
