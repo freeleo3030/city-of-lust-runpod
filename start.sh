@@ -14,6 +14,29 @@ if [ -f "$JUGGERNAUT_FILE" ]; then
     FILE_SIZE=$(stat -c%s "$JUGGERNAUT_FILE" 2>/dev/null || echo 0)
 fi
 
+download_juggernaut() {
+    local URLS=(
+        "https://huggingface.co/prolapse/xl4supir/resolve/main/juggernautXL_ragnarok.safetensors"
+        "https://civitai.com/api/download/models/357609"
+    )
+    for url in "${URLS[@]}"; do
+        echo "Downloading Juggernaut XL Ragnarok from: $url"
+        wget -q --show-progress --tries=2 --timeout=120 \
+            "$url" -O "$JUGGERNAUT_FILE"
+        local sz
+        sz=$(stat -c%s "$JUGGERNAUT_FILE" 2>/dev/null || echo 0)
+        if [ "$sz" -ge "$MIN_SIZE" ]; then
+            echo "Download OK (${sz} bytes)."
+            return 0
+        else
+            echo "Incomplete download (${sz} bytes). Trying next source..."
+            rm -f "$JUGGERNAUT_FILE"
+        fi
+    done
+    echo "ERROR: All Juggernaut XL download sources failed!"
+    return 1
+}
+
 if [ -f "$JUGGERNAUT_FILE" ] && [ "$FILE_SIZE" -ge "$MIN_SIZE" ]; then
     ln -sf "$JUGGERNAUT_FILE" "${MODEL_DIR}/juggernaut_xl_ragnarok.safetensors"
     echo "Juggernaut XL Ragnarok linked (${FILE_SIZE} bytes)."
@@ -22,13 +45,11 @@ else
         echo "Juggernaut XL: file exists but incomplete (${FILE_SIZE} bytes). Removing and re-downloading..."
         rm -f "$JUGGERNAUT_FILE"
     else
-        echo "Juggernaut XL Ragnarok not found. Downloading from HuggingFace (~7GB)..."
+        echo "Juggernaut XL Ragnarok not found. Downloading (~7GB)..."
     fi
-    wget -q --show-progress \
-        "https://huggingface.co/modelzpalace/juggernautXL_ragnarok/resolve/main/juggernautXL_ragnarokBy.safetensors" \
-        -O "$JUGGERNAUT_FILE"
+    download_juggernaut
     ln -sf "$JUGGERNAUT_FILE" "${MODEL_DIR}/juggernaut_xl_ragnarok.safetensors"
-    echo "Juggernaut XL Ragnarok downloaded and linked."
+    echo "Juggernaut XL Ragnarok linked."
 fi
 
 # IP-Adapter SDXL Face 모델 링크
