@@ -7,12 +7,11 @@ RUN apt-get update && apt-get install -y \
     wget git libgl1 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir \
-    runpod \
-    diffusers==0.21.4 \
-    transformers==4.35.2 \
-    accelerate==0.24.1 \
-    Pillow
+RUN pip install --no-cache-dir --force-reinstall \
+    "diffusers==0.21.4" \
+    "transformers==4.35.2" \
+    "accelerate==0.24.1" \
+    && pip install --no-cache-dir runpod Pillow
 
 COPY handler_sfw.py /handler.py
 
