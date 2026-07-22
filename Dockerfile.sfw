@@ -12,7 +12,8 @@ RUN pip install --no-cache-dir --target=/opt/sfw_packages \
     "diffusers==0.21.4" \
     "accelerate==0.24.1" \
     "tokenizers==0.14.1" \
-    runpod Pillow
+    runpod Pillow \
+    && rm -rf /opt/sfw_packages/torch /opt/sfw_packages/torchvision /opt/sfw_packages/nvidia
 
 ENV PYTHONPATH=/opt/sfw_packages
 
