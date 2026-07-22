@@ -7,10 +7,12 @@ RUN apt-get update && apt-get install -y \
     wget git libgl1 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir --force-reinstall \
-    "diffusers==0.21.4" \
+RUN pip uninstall -y transformers diffusers accelerate tokenizers huggingface-hub 2>/dev/null || true
+RUN pip install --no-cache-dir \
     "transformers==4.35.2" \
+    "diffusers==0.21.4" \
     "accelerate==0.24.1" \
+    "tokenizers==0.14.1" \
     && pip install --no-cache-dir runpod Pillow
 
 COPY handler_sfw.py /handler.py
