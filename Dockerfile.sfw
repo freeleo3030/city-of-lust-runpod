@@ -9,9 +9,9 @@ RUN apt-get update && apt-get install -y \
 
 RUN pip install --no-cache-dir \
     runpod \
-    diffusers==0.30.3 \
-    transformers \
-    accelerate \
+    diffusers==0.21.4 \
+    transformers==4.35.2 \
+    accelerate==0.24.1 \
     Pillow
 
 COPY handler_sfw.py /handler.py
