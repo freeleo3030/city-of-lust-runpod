@@ -12,8 +12,7 @@ RUN pip install --no-cache-dir \
     diffusers==0.30.3 \
     transformers \
     accelerate \
-    Pillow \
-    torch torchvision --index-url https://download.pytorch.org/whl/cu124
+    Pillow
 
 COPY handler_sfw.py /handler.py
 
