@@ -5,12 +5,12 @@ import os
 import gc
 from io import BytesIO
 
-print("handler_sfw.py starting... ChilloutMix SD1.5 SFW", flush=True)
+print("handler_sfw.py starting... majicMIX Realistic SD1.5 SFW", flush=True)
 
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
 
-MODEL_ID = "stablediffusionapi/chilloutmix"
-MODEL_PATH = "/models/chilloutmix"
+MODEL_ID = "Yntec/majicMIXRealistic"
+MODEL_PATH = "/models/majicmix"
 
 pipe = None
 
@@ -22,7 +22,7 @@ def load_model():
     import torch
     from diffusers import StableDiffusionPipeline, DPMSolverMultistepScheduler
 
-    print(f"Loading ChilloutMix from {MODEL_PATH}...", flush=True)
+    print(f"Loading majicMIX Realistic from {MODEL_PATH}...", flush=True)
     if os.path.exists(MODEL_PATH):
         pipe = StableDiffusionPipeline.from_pretrained(
             MODEL_PATH,
@@ -43,7 +43,7 @@ def load_model():
     pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
     pipe = pipe.to("cuda")
     pipe.enable_attention_slicing()
-    print("ChilloutMix loaded!", flush=True)
+    print("majicMIX Realistic loaded!", flush=True)
 
 
 def txt2img(prompt, negative_prompt, width, height, steps, cfg_scale, seed):

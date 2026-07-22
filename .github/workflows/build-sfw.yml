@@ -1,4 +1,4 @@
-name: Build SFW Docker Image (ChilloutMix SD1.5)
+name: Build SFW Docker Image (majicMIX Realistic SD1.5)
 
 on:
   push:
