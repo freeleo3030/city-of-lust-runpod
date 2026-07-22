@@ -9,8 +9,8 @@ print("handler_sfw.py starting... majicMIX Realistic SD1.5 SFW", flush=True)
 
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
 
-MODEL_ID = "Yntec/majicMIXRealistic"
-MODEL_PATH = "/runpod-volume/majicmix"
+MODEL_ID = "Lykon/dreamshaper-8"
+MODEL_PATH = "/runpod-volume/dreamshaper8"
 
 pipe = None
 
