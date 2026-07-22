@@ -8,8 +8,6 @@ import tracemalloc
 
 print("handler.py starting... SDXL V1", flush=True)
 
-# IPA job 카운터 — 20개마다 worker 재시작
-_ipa_job_count = 0
 
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
 
@@ -286,12 +284,6 @@ def handler(job):
         _force_vram_free()
 
         if mode == "ipadapter":
-            global _ipa_job_count
-            _ipa_job_count += 1
-            print(f"[SDXL] IPA job count: {_ipa_job_count}/20", flush=True)
-            if _ipa_job_count >= 20:
-                print(f"[SDXL] Job limit reached, restarting worker...", flush=True)
-                os._exit(0)
 
         return {"image": image_b64, "status": "success"}
 
