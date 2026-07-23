@@ -283,8 +283,6 @@ def handler(job):
             pass
         _force_vram_free()
 
-        if mode == "ipadapter":
-
         return {"image": image_b64, "status": "success"}
 
     except Exception as e:
