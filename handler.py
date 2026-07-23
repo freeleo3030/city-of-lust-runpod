@@ -188,6 +188,42 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
         _force_vram_free()
 
 
+def img2img(prompt, negative_prompt, init_image_b64, width, height, steps, cfg_scale, seed, denoise=0.5):
+    import torch
+    import numpy as np
+    from PIL import Image
+    from io import BytesIO
+    from nodes import CLIPTextEncode, KSampler, VAEDecode, VAEEncode
+
+    if ',' in init_image_b64:
+        init_image_b64 = init_image_b64.split(',', 1)[1]
+    img_b = init_image_b64.strip().encode('ascii', errors='ignore').decode('ascii')
+    img_b += '=' * (-len(img_b) % 4)
+    pil_img = Image.open(BytesIO(base64.b64decode(img_b))).convert("RGB").resize((width, height), Image.LANCZOS)
+    img_arr = np.array(pil_img).astype(np.float32) / 255.0
+    img_tensor = torch.from_numpy(img_arr).unsqueeze(0)
+
+    clip_encoder = CLIPTextEncode()
+    positive = clip_encoder.encode(loaded_clip, prompt)[0]
+    negative_cond = clip_encoder.encode(loaded_clip, negative_prompt)[0]
+
+    encoder = VAEEncode()
+    latent = encoder.encode(loaded_vae, img_tensor)[0]
+
+    sampler = KSampler()
+    sampled = sampler.sample(
+        loaded_model, seed, steps, cfg_scale,
+        "euler_ancestral", "karras",
+        positive, negative_cond, latent, denoise=denoise
+    )[0]
+
+    decoder = VAEDecode()
+    result = decoder.decode(loaded_vae, sampled)[0]
+    del positive, negative_cond, latent, sampled, img_tensor
+    gc.collect()
+    return result
+
+
 def txt2img(prompt, negative_prompt, width, height, steps, cfg_scale, seed):
     from nodes import CLIPTextEncode, KSampler, VAEDecode, EmptyLatentImage
 
@@ -252,7 +288,13 @@ def handler(job):
         log_vram("before generation")
         print(f"Mode={mode}, {width}x{height}, steps={steps}, seed={seed}", flush=True)
 
-        if mode == "ipadapter":
+        if mode == "img2img":
+            init_image = inp.get("init_image", "")
+            denoise = float(inp.get("denoise", 0.5))
+            if not init_image:
+                raise ValueError("img2img mode requires init_image (base64)")
+            image_tensor = img2img(prompt, negative_prompt, init_image, width, height, steps, cfg_scale, seed, denoise)
+        elif mode == "ipadapter":
             face_image = inp.get("face_image", "")
             ipa_strength = float(inp.get("ipa_strength", 0.35))
             if not face_image:
