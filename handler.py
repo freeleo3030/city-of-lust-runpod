@@ -19,7 +19,7 @@ MODEL_PATH = "/comfyui/models/checkpoints/juggernaut_xl_ragnarok.safetensors"
 IPA_PATH = "/comfyui/models/ipadapter/ip-adapter-plus-face_sdxl_vit-h.safetensors"
 IPA_PATH_FALLBACK = "/comfyui/models/ipadapter/ip-adapter-plus-face_sdxl_vit-h.bin"
 CLIP_PATH = "/comfyui/models/clip_vision/clip-vit-h-14.safetensors"
-SVD_PATH = "/workspace/svd/svd_xt.safetensors"
+SVD_PATH = "/runpod-volume/svd/svd_xt.safetensors"
 
 loaded_ipadapter = None
 loaded_clip_vision = None
