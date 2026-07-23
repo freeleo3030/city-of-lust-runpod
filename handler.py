@@ -19,12 +19,16 @@ MODEL_PATH = "/comfyui/models/checkpoints/juggernaut_xl_ragnarok.safetensors"
 IPA_PATH = "/comfyui/models/ipadapter/ip-adapter-plus-face_sdxl_vit-h.safetensors"
 IPA_PATH_FALLBACK = "/comfyui/models/ipadapter/ip-adapter-plus-face_sdxl_vit-h.bin"
 CLIP_PATH = "/comfyui/models/clip_vision/clip-vit-h-14.safetensors"
+SVD_PATH = "/runpod-volume/svd/svd_xt.safetensors"
 
 loaded_ipadapter = None
 loaded_clip_vision = None
 loaded_model = None
 loaded_clip = None
 loaded_vae = None
+loaded_svd = None
+loaded_svd_clip = None
+loaded_svd_vae = None
 
 
 def _force_vram_free():
@@ -188,6 +192,117 @@ def ipadapter_txt2img(prompt, negative_prompt, face_image_b64, width, height, st
         _force_vram_free()
 
 
+def unload_main_model():
+    global loaded_model, loaded_clip, loaded_vae, loaded_ipadapter, loaded_clip_vision
+    import torch, gc
+    try:
+        import comfy.model_management as mm
+        mm.unload_all_models()
+        mm.soft_empty_cache()
+    except Exception:
+        pass
+    loaded_model = loaded_clip = loaded_vae = None
+    loaded_ipadapter = loaded_clip_vision = None
+    gc.collect()
+    torch.cuda.empty_cache()
+    print("Main model unloaded", flush=True)
+
+
+def load_svd():
+    global loaded_svd, loaded_svd_clip, loaded_svd_vae
+    if loaded_svd is not None:
+        return True
+    if not os.path.exists(SVD_PATH):
+        print(f"SVD model not found: {SVD_PATH}", flush=True)
+        return False
+    try:
+        from nodes import CheckpointLoaderSimple
+        # SVD 모델을 comfyui checkpoints 폴더에 심볼릭 링크
+        svd_link = "/comfyui/models/checkpoints/svd_xt.safetensors"
+        if not os.path.exists(svd_link):
+            os.symlink(SVD_PATH, svd_link)
+        loader = CheckpointLoaderSimple()
+        loaded_svd, loaded_svd_clip, loaded_svd_vae = loader.load_checkpoint("svd_xt.safetensors")
+        print("SVD model loaded!", flush=True)
+        log_vram("after load_svd")
+        return True
+    except Exception as e:
+        print(f"SVD load failed: {e}", flush=True)
+        return False
+
+
+def svd_generate(init_image_b64, num_frames=14, motion_bucket_id=127, fps=7, augmentation_level=0.0, steps=20, seed=42):
+    import torch
+    import numpy as np
+    from PIL import Image
+    from io import BytesIO
+    import imageio
+    import tempfile
+
+    from nodes import CLIPVisionEncode, VAEEncode, VAEDecode, KSampler
+
+    # 입력 이미지 디코딩
+    if ',' in init_image_b64:
+        init_image_b64 = init_image_b64.split(',', 1)[1]
+    img_b = init_image_b64.strip().encode('ascii', errors='ignore').decode('ascii')
+    img_b += '=' * (-len(img_b) % 4)
+    pil_img = Image.open(BytesIO(base64.b64decode(img_b))).convert("RGB").resize((1024, 576), Image.LANCZOS)
+    img_arr = np.array(pil_img).astype(np.float32) / 255.0
+    img_tensor = torch.from_numpy(img_arr).unsqueeze(0)
+
+    # SVD 컨디셔닝
+    try:
+        from nodes import SVD_img2vid_Conditioning, VideoLinearCFGGuidance
+    except ImportError as e:
+        raise RuntimeError(f"SVD nodes not available in this ComfyUI version: {e}")
+
+    clip_encoder = CLIPVisionEncode()
+    clip_encoded = clip_encoder.encode(loaded_svd_clip, img_tensor)[0]
+
+    vae_encoder = VAEEncode()
+    init_latent = vae_encoder.encode(loaded_svd_vae, img_tensor)[0]
+
+    svd_cond = SVD_img2vid_Conditioning()
+    positive, negative, latent = svd_cond.encode(
+        loaded_svd_clip, loaded_svd_vae, img_tensor,
+        num_frames, motion_bucket_id, fps, augmentation_level
+    )
+
+    cfg_node = VideoLinearCFGGuidance()
+    model_cfg = cfg_node.patch(loaded_svd, min_cfg=1.0)[0]
+
+    sampler = KSampler()
+    sampled = sampler.sample(
+        model_cfg, seed, steps, 2.5,
+        "euler", "karras",
+        positive, negative, latent, denoise=1.0
+    )[0]
+
+    decoder = VAEDecode()
+    frames_tensor = decoder.decode(loaded_svd_vae, sampled)[0]
+
+    # 프레임 → mp4
+    frames = []
+    for i in range(frames_tensor.shape[0]):
+        frame = (255.0 * frames_tensor[i].detach().cpu().numpy()).clip(0, 255).astype(np.uint8)
+        frames.append(frame)
+
+    tmp = tempfile.NamedTemporaryFile(suffix='.mp4', delete=False)
+    tmp.close()
+    writer = imageio.get_writer(tmp.name, fps=fps, codec='libx264', quality=8)
+    for frame in frames:
+        writer.append_data(frame)
+    writer.close()
+
+    with open(tmp.name, 'rb') as f:
+        mp4_b64 = base64.b64encode(f.read()).decode('utf-8')
+    os.unlink(tmp.name)
+
+    del img_tensor, clip_encoded, init_latent, sampled, frames_tensor
+    gc.collect()
+    return mp4_b64
+
+
 def img2img(prompt, negative_prompt, init_image_b64, width, height, steps, cfg_scale, seed, denoise=0.5):
     import torch
     import numpy as np
@@ -288,7 +403,22 @@ def handler(job):
         log_vram("before generation")
         print(f"Mode={mode}, {width}x{height}, steps={steps}, seed={seed}", flush=True)
 
-        if mode == "img2img":
+        if mode == "svd":
+            init_image = inp.get("init_image", "")
+            if not init_image:
+                raise ValueError("svd mode requires init_image (base64)")
+            num_frames = int(inp.get("num_frames", 14))
+            motion_bucket_id = int(inp.get("motion_bucket_id", 127))
+            fps = int(inp.get("fps", 7))
+            steps = int(inp.get("steps", 20))
+            # Juggernaut 언로드 후 SVD 로드
+            unload_main_model()
+            log_vram("after unload, before SVD")
+            if not load_svd():
+                raise RuntimeError("SVD model load failed")
+            mp4_b64 = svd_generate(init_image, num_frames, motion_bucket_id, fps, 0.0, steps, seed)
+            return {"video": mp4_b64, "status": "success"}
+        elif mode == "img2img":
             init_image = inp.get("init_image", "")
             denoise = float(inp.get("denoise", 0.5))
             if not init_image:
