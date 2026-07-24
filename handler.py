@@ -206,21 +206,31 @@ def unload_main_model():
     print("Main model unloaded", flush=True)
 
 
+SVD_HF_PATH = "/runpod-volume/svd_hf"
+
 def load_svd():
     global loaded_svd_pipe
     if loaded_svd_pipe is not None:
         return True
-    if not os.path.exists(SVD_PATH):
-        print(f"SVD model not found: {SVD_PATH}", flush=True)
-        return False
     try:
         import torch
         from diffusers import StableVideoDiffusionPipeline
-        loaded_svd_pipe = StableVideoDiffusionPipeline.from_single_file(
-            SVD_PATH,
-            torch_dtype=torch.float16,
-            variant="fp16",
-        )
+
+        if os.path.exists(SVD_HF_PATH):
+            print(f"SVD loading from local: {SVD_HF_PATH}", flush=True)
+            loaded_svd_pipe = StableVideoDiffusionPipeline.from_pretrained(
+                SVD_HF_PATH, torch_dtype=torch.float16, variant="fp16"
+            )
+        else:
+            print("SVD: local not found, downloading from HuggingFace (first time ~9GB)...", flush=True)
+            loaded_svd_pipe = StableVideoDiffusionPipeline.from_pretrained(
+                "stabilityai/stable-video-diffusion-img2vid-xt",
+                torch_dtype=torch.float16, variant="fp16"
+            )
+            print(f"SVD: saving to {SVD_HF_PATH}...", flush=True)
+            loaded_svd_pipe.save_pretrained(SVD_HF_PATH)
+            print("SVD: saved!", flush=True)
+
         loaded_svd_pipe = loaded_svd_pipe.to("cuda")
         loaded_svd_pipe.enable_model_cpu_offload()
         print("SVD model loaded!", flush=True)
