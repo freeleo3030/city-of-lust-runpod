@@ -401,7 +401,26 @@ def handler(job):
         log_vram("before generation")
         print(f"Mode={mode}, {width}x{height}, steps={steps}, seed={seed}", flush=True)
 
-        if mode in ("svd", "animatediff"):
+        if mode == "sprite":
+            init_image = inp.get("init_image", "")
+            if not init_image:
+                raise ValueError("sprite mode requires init_image")
+            import torch
+            num_frames = int(inp.get("num_frames", 3))
+            denoise = float(inp.get("denoise", 0.25))
+            frame_prompts = inp.get("frame_prompts", [prompt] * num_frames)
+            frame_seeds_in = inp.get("frame_seeds", [seed + i for i in range(num_frames)])
+            frames_b64 = []
+            for i in range(num_frames):
+                fp = frame_prompts[i] if i < len(frame_prompts) else prompt
+                fs = frame_seeds_in[i] if i < len(frame_seeds_in) else seed + i
+                image_tensor = img2img(fp, negative_prompt, init_image, width, height, steps, cfg_scale, fs, denoise)
+                frames_b64.append(tensor_to_b64(image_tensor))
+                del image_tensor
+                gc.collect()
+                torch.cuda.empty_cache()
+            return {"frames": frames_b64, "status": "success"}
+        elif mode in ("svd", "animatediff"):
             init_image = inp.get("init_image", "")
             if not init_image:
                 raise ValueError("animatediff mode requires init_image (base64)")
