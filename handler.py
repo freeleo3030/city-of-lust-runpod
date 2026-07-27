@@ -208,13 +208,15 @@ ANIMATEDIFF_ADAPTER_PATH = "/runpod-volume/animatediff/motion_adapter"
 
 loaded_animatediff_pipe = None
 
+MOTION_LORA_PATH = "/runpod-volume/animatediff/motion_lora.safetensors"
+
 def load_animatediff():
     global loaded_animatediff_pipe
     if loaded_animatediff_pipe is not None:
         return True
     try:
         import torch
-        from diffusers import AnimateDiffPipeline, DDIMScheduler, MotionAdapter
+        from diffusers import AnimateDiffVideoToVideoPipeline, DDIMScheduler, MotionAdapter
 
         if os.path.exists(ANIMATEDIFF_ADAPTER_PATH):
             print("AnimateDiff: loading adapter from local...", flush=True)
@@ -228,12 +230,21 @@ def load_animatediff():
             adapter.save_pretrained(ANIMATEDIFF_ADAPTER_PATH)
             print("AnimateDiff: adapter saved!", flush=True)
 
-        pipe = AnimateDiffPipeline.from_pretrained(
+        pipe = AnimateDiffVideoToVideoPipeline.from_pretrained(
             ANIMATEDIFF_MODEL_PATH,
             motion_adapter=adapter,
             torch_dtype=torch.float16,
         )
         pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config, beta_schedule="linear")
+
+        if os.path.exists(MOTION_LORA_PATH):
+            print("AnimateDiff: loading motion LoRA...", flush=True)
+            pipe.load_lora_weights(MOTION_LORA_PATH)
+            pipe.fuse_lora(lora_scale=0.8)
+            print("AnimateDiff: motion LoRA loaded!", flush=True)
+        else:
+            print("AnimateDiff: no motion LoRA found, skipping", flush=True)
+
         pipe.enable_model_cpu_offload()
         loaded_animatediff_pipe = pipe
         print("AnimateDiff loaded!", flush=True)
@@ -244,17 +255,30 @@ def load_animatediff():
         return False
 
 
-def animatediff_generate(prompt, negative_prompt, num_frames=16, fps=8, steps=25, seed=42):
+def animatediff_generate(init_image_b64, prompt, negative_prompt, num_frames=16, fps=8, steps=25, seed=42, strength=0.7):
     import torch
     import numpy as np
+    from PIL import Image
+    from io import BytesIO
     import imageio
     import tempfile
 
+    # 입력 이미지 디코딩
+    if ',' in init_image_b64:
+        init_image_b64 = init_image_b64.split(',', 1)[1]
+    img_b = init_image_b64.strip().encode('ascii', errors='ignore').decode('ascii')
+    img_b += '=' * (-len(img_b) % 4)
+    pil_img = Image.open(BytesIO(base64.b64decode(img_b))).convert("RGB").resize((512, 768), Image.LANCZOS)
+
+    # 단일 이미지를 num_frames장 반복 → vid2vid 입력
+    video_frames = [pil_img] * num_frames
+
     generator = torch.manual_seed(seed)
     output = loaded_animatediff_pipe(
+        video=video_frames,
         prompt=prompt,
         negative_prompt=negative_prompt,
-        num_frames=num_frames,
+        strength=strength,
         num_inference_steps=steps,
         guidance_scale=7.5,
         generator=generator,
@@ -378,16 +402,20 @@ def handler(job):
         print(f"Mode={mode}, {width}x{height}, steps={steps}, seed={seed}", flush=True)
 
         if mode in ("svd", "animatediff"):
+            init_image = inp.get("init_image", "")
+            if not init_image:
+                raise ValueError("animatediff mode requires init_image (base64)")
             ad_prompt = inp.get("prompt", prompt)
             ad_neg = inp.get("negative_prompt", negative_prompt)
             num_frames = int(inp.get("num_frames", 16))
             fps = int(inp.get("fps", 8))
             steps = int(inp.get("steps", 25))
+            strength = float(inp.get("strength", 0.7))
             unload_main_model()
             log_vram("after unload, before AnimateDiff")
             if not load_animatediff():
                 raise RuntimeError("AnimateDiff load failed")
-            mp4_b64 = animatediff_generate(ad_prompt, ad_neg, num_frames, fps, steps, seed)
+            mp4_b64 = animatediff_generate(init_image, ad_prompt, ad_neg, num_frames, fps, steps, seed, strength)
             return {"video": mp4_b64, "status": "success"}
         elif mode == "img2img":
             init_image = inp.get("init_image", "")
