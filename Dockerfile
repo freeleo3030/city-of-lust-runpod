@@ -17,7 +17,7 @@ RUN git clone https://github.com/cubiq/ComfyUI_IPAdapter_plus.git \
     /comfyui/custom_nodes/ComfyUI_IPAdapter_plus && \
     pip install --no-cache-dir -r /comfyui/custom_nodes/ComfyUI_IPAdapter_plus/requirements.txt || true
 
-# runpod + requests + accelerate (SDXL 필수) + imageio (SVD mp4 변환)
+# runpod + requests + accelerate (SDXL 필수) + imageio (AnimateDiff mp4 변환)
 RUN pip install --no-cache-dir runpod requests Pillow accelerate "imageio[ffmpeg]" "diffusers==0.30.3" "transformers==4.44.2"
 
 COPY handler.py /handler.py

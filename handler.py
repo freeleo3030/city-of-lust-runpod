@@ -19,14 +19,11 @@ MODEL_PATH = "/comfyui/models/checkpoints/juggernaut_xl_ragnarok.safetensors"
 IPA_PATH = "/comfyui/models/ipadapter/ip-adapter-plus-face_sdxl_vit-h.safetensors"
 IPA_PATH_FALLBACK = "/comfyui/models/ipadapter/ip-adapter-plus-face_sdxl_vit-h.bin"
 CLIP_PATH = "/comfyui/models/clip_vision/clip-vit-h-14.safetensors"
-SVD_PATH = "/runpod-volume/svd/svd_xt.safetensors"
-
 loaded_ipadapter = None
 loaded_clip_vision = None
 loaded_model = None
 loaded_clip = None
 loaded_vae = None
-loaded_svd_pipe = None
 
 
 def _force_vram_free():
@@ -206,69 +203,64 @@ def unload_main_model():
     print("Main model unloaded", flush=True)
 
 
-SVD_HF_PATH = "/runpod-volume/svd_hf"
+ANIMATEDIFF_MODEL_PATH = "/runpod-volume/dreamshaper8"
+ANIMATEDIFF_ADAPTER_PATH = "/runpod-volume/animatediff/motion_adapter"
 
-def load_svd():
-    global loaded_svd_pipe
-    if loaded_svd_pipe is not None:
+loaded_animatediff_pipe = None
+
+def load_animatediff():
+    global loaded_animatediff_pipe
+    if loaded_animatediff_pipe is not None:
         return True
     try:
         import torch
-        from diffusers import StableVideoDiffusionPipeline
+        from diffusers import AnimateDiffPipeline, DDIMScheduler, MotionAdapter
 
-        if os.path.exists(SVD_HF_PATH):
-            print(f"SVD loading from local: {SVD_HF_PATH}", flush=True)
-            loaded_svd_pipe = StableVideoDiffusionPipeline.from_pretrained(
-                SVD_HF_PATH, torch_dtype=torch.float16, variant="fp16"
-            )
+        if os.path.exists(ANIMATEDIFF_ADAPTER_PATH):
+            print("AnimateDiff: loading adapter from local...", flush=True)
+            adapter = MotionAdapter.from_pretrained(ANIMATEDIFF_ADAPTER_PATH, torch_dtype=torch.float16)
         else:
-            print("SVD: local not found, downloading from HuggingFace (first time ~9GB)...", flush=True)
-            loaded_svd_pipe = StableVideoDiffusionPipeline.from_pretrained(
-                "stabilityai/stable-video-diffusion-img2vid-xt",
-                torch_dtype=torch.float16, variant="fp16"
+            print("AnimateDiff: downloading motion adapter (~200MB)...", flush=True)
+            adapter = MotionAdapter.from_pretrained(
+                "guoyww/animatediff-motion-adapter-v1-5-2", torch_dtype=torch.float16
             )
-            print(f"SVD: saving to {SVD_HF_PATH}...", flush=True)
-            loaded_svd_pipe.save_pretrained(SVD_HF_PATH)
-            print("SVD: saved!", flush=True)
+            os.makedirs(ANIMATEDIFF_ADAPTER_PATH, exist_ok=True)
+            adapter.save_pretrained(ANIMATEDIFF_ADAPTER_PATH)
+            print("AnimateDiff: adapter saved!", flush=True)
 
-        loaded_svd_pipe = loaded_svd_pipe.to("cuda")
-        loaded_svd_pipe.enable_model_cpu_offload()
-        print("SVD model loaded!", flush=True)
-        log_vram("after load_svd")
+        pipe = AnimateDiffPipeline.from_pretrained(
+            ANIMATEDIFF_MODEL_PATH,
+            motion_adapter=adapter,
+            torch_dtype=torch.float16,
+        )
+        pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config, beta_schedule="linear")
+        pipe.enable_model_cpu_offload()
+        loaded_animatediff_pipe = pipe
+        print("AnimateDiff loaded!", flush=True)
+        log_vram("after load_animatediff")
         return True
     except Exception as e:
-        print(f"SVD load failed: {e}", flush=True)
+        print(f"AnimateDiff load failed: {e}", flush=True)
         return False
 
 
-def svd_generate(init_image_b64, num_frames=14, motion_bucket_id=127, fps=7, augmentation_level=0.0, steps=20, seed=42):
+def animatediff_generate(prompt, negative_prompt, num_frames=16, fps=8, steps=25, seed=42):
     import torch
     import numpy as np
-    from PIL import Image
-    from io import BytesIO
     import imageio
     import tempfile
 
-    # 입력 이미지 디코딩 및 SVD 권장 해상도(1024x576)로 리사이즈
-    if ',' in init_image_b64:
-        init_image_b64 = init_image_b64.split(',', 1)[1]
-    img_b = init_image_b64.strip().encode('ascii', errors='ignore').decode('ascii')
-    img_b += '=' * (-len(img_b) % 4)
-    pil_img = Image.open(BytesIO(base64.b64decode(img_b))).convert("RGB").resize((1024, 576), Image.LANCZOS)
-
     generator = torch.manual_seed(seed)
-    frames = loaded_svd_pipe(
-        pil_img,
+    output = loaded_animatediff_pipe(
+        prompt=prompt,
+        negative_prompt=negative_prompt,
         num_frames=num_frames,
         num_inference_steps=steps,
-        motion_bucket_id=motion_bucket_id,
-        fps=fps,
-        noise_aug_strength=augmentation_level,
-        decode_chunk_size=4,
+        guidance_scale=7.5,
         generator=generator,
-    ).frames[0]
+    )
+    frames = output.frames[0]
 
-    # 프레임 → mp4
     tmp = tempfile.NamedTemporaryFile(suffix='.mp4', delete=False)
     tmp.close()
     writer = imageio.get_writer(tmp.name, fps=fps, codec='libx264', quality=8)
@@ -385,20 +377,17 @@ def handler(job):
         log_vram("before generation")
         print(f"Mode={mode}, {width}x{height}, steps={steps}, seed={seed}", flush=True)
 
-        if mode == "svd":
-            init_image = inp.get("init_image", "")
-            if not init_image:
-                raise ValueError("svd mode requires init_image (base64)")
-            num_frames = int(inp.get("num_frames", 14))
-            motion_bucket_id = int(inp.get("motion_bucket_id", 127))
-            fps = int(inp.get("fps", 7))
-            steps = int(inp.get("steps", 20))
-            # Juggernaut 언로드 후 SVD 로드
+        if mode in ("svd", "animatediff"):
+            ad_prompt = inp.get("prompt", prompt)
+            ad_neg = inp.get("negative_prompt", negative_prompt)
+            num_frames = int(inp.get("num_frames", 16))
+            fps = int(inp.get("fps", 8))
+            steps = int(inp.get("steps", 25))
             unload_main_model()
-            log_vram("after unload, before SVD")
-            if not load_svd():
-                raise RuntimeError("SVD model load failed")
-            mp4_b64 = svd_generate(init_image, num_frames, motion_bucket_id, fps, 0.0, steps, seed)
+            log_vram("after unload, before AnimateDiff")
+            if not load_animatediff():
+                raise RuntimeError("AnimateDiff load failed")
+            mp4_b64 = animatediff_generate(ad_prompt, ad_neg, num_frames, fps, steps, seed)
             return {"video": mp4_b64, "status": "success"}
         elif mode == "img2img":
             init_image = inp.get("init_image", "")
