@@ -221,7 +221,7 @@ def generate_animation(source_image_b64, expression, num_frames=30, fps=15):
 
             # warp & decode
             out = wrapper.warp_decode(f_s, x_s, x_d_i)
-            frame = wrapper.parse_output(out["out"])   # (H,W,3) uint8
+            frame = wrapper.parse_output(out["out"])[0]  # (1,H,W,3) -> (H,W,3)
             output_frames.append(frame)
 
     # 루프를 위해 역방향 프레임 추가 (forward + backward = seamless loop)
