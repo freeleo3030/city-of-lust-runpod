@@ -198,31 +198,23 @@ def generate_animation(source_image_b64, expression, num_frames=30, fps=15):
         keyframes = EXPRESSION_KEYFRAMES.get(expression, EXPRESSION_KEYFRAMES["idle"])
         frame_params = interpolate_keyframes(keyframes, num_frames)
 
+        import math
         output_frames = []
         for eyes_open, smile, eyebrow, pitch_delta, yaw_delta in frame_params:
-            # 눈 retarget
-            eye_ratio = torch.tensor([[max(0.0, 1.0 - float(eyes_open))]], dtype=torch.float32).to(wrapper.device)
-            delta_eye = wrapper.retarget_eye(x_c_s, eye_ratio)   # (1,63,2)
+            # keypoint에 직접 offset 적용 (단순화된 표정 제어)
+            x_d_i = x_s.clone()
 
-            # 입 retarget (smile → 입 조금 열기)
-            lip_ratio = torch.tensor([[float(smile) * 0.3]], dtype=torch.float32).to(wrapper.device)
-            delta_lip = wrapper.retarget_lip(x_c_s, lip_ratio)   # (1,63,2)
-
-            # driving keypoint = source + 눈/입 delta
-            x_d_i = x_s + delta_eye + delta_lip
-
-            # pitch/yaw 회전 변화 반영
-            import math
-            pitch_rad = math.radians(float(pitch_delta))
-            yaw_rad   = math.radians(float(yaw_delta))
-            # x_s_info의 pitch/yaw에 delta 추가해서 새 R 계산
-            from src.utils.helper import calc_motion_multiplier
-            # 간단히 kp에 소량 offset 적용
-            if abs(pitch_rad) > 0.001 or abs(yaw_rad) > 0.001:
+            # pitch/yaw offset (고개 움직임)
+            if abs(pitch_delta) > 0.01 or abs(yaw_delta) > 0.01:
                 offset = torch.zeros_like(x_d_i)
-                offset[..., 1] += pitch_rad * 0.1  # y축 (pitch)
-                offset[..., 0] += yaw_rad * 0.1    # x축 (yaw)
+                offset[..., 1] += math.radians(float(pitch_delta)) * 0.08
+                offset[..., 0] += math.radians(float(yaw_delta)) * 0.08
                 x_d_i = x_d_i + offset
+
+            # 눈 감기: 눈 관련 keypoints y축 조정 (21개 중 눈 영역 추정 2~8번)
+            eye_close = max(0.0, 1.0 - float(eyes_open))
+            if eye_close > 0.05:
+                x_d_i[:, 2:8, 1] += eye_close * 0.02
 
             # stitching
             x_d_i = wrapper.stitching(x_s, x_d_i)
