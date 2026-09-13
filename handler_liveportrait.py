@@ -117,7 +117,6 @@ def load_pipeline():
 
     from src.config.inference_config import InferenceConfig
     from src.config.crop_config import CropConfig
-    from src.live_portrait_pipeline import LivePortraitPipeline
 
     # 실제 볼륨 구조: /runpod-volume/liveportrait/liveportrait/base_models/*.pth
     base_dir = os.path.join(WEIGHTS_DIR, "liveportrait", "base_models")
@@ -131,11 +130,14 @@ def load_pipeline():
     )
     crop_cfg = CropConfig()
 
-    loaded_pipeline = LivePortraitPipeline(
-        inference_cfg=inference_cfg,
-        crop_cfg=crop_cfg,
-    )
-    print("LivePortrait pipeline loaded!", flush=True)
+    from src.live_portrait_wrapper import LivePortraitWrapper
+    from src.utils.cropper import Cropper
+
+    wrapper = LivePortraitWrapper(inference_cfg=inference_cfg)
+    cropper = Cropper(crop_cfg=crop_cfg)
+
+    loaded_pipeline = {"wrapper": wrapper, "cropper": cropper, "crop_cfg": crop_cfg}
+    print("LivePortrait wrapper loaded!", flush=True)
 
 
 def interpolate_keyframes(keyframes, num_frames):
@@ -172,29 +174,63 @@ def generate_animation(source_image_b64, expression, num_frames=30, fps=15):
     raw = source_image_b64.strip()
     raw += "=" * (-len(raw) % 4)
     pil_src = Image.open(BytesIO(base64.b64decode(raw))).convert("RGB")
+    img_rgb = np.array(pil_src)
 
-    keyframes = EXPRESSION_KEYFRAMES.get(expression, EXPRESSION_KEYFRAMES["idle"])
-    frame_params = interpolate_keyframes(keyframes, num_frames)
+    wrapper = loaded_pipeline["wrapper"]
+    cropper = loaded_pipeline["cropper"]
+    crop_cfg = loaded_pipeline["crop_cfg"]
 
-    # LivePortrait retargeting API 사용
-    pipeline = loaded_pipeline
-    output_frames = []
+    # 소스 이미지 crop
+    crop_info = cropper.crop_source_image(img_rgb, crop_cfg)
+    img_crop_256x256 = crop_info["img_crop_256x256"]  # (256,256,3) uint8
 
-    for eyes_open, smile, eyebrow, pitch, yaw in frame_params:
-        retarget_cfg = {
-            "eyes_open": float(eyes_open),
-            "lip_open": float(smile * 0.3),
-            "smile": float(smile),
-            "eyebrow_raise": float(eyebrow),
-            "head_pitch_variation": float(pitch),
-            "head_yaw_variation": float(yaw),
-            "head_roll_variation": 0.0,
-        }
-        result = pipeline.retarget_portrait(pil_src, retarget_cfg)
-        if isinstance(result, np.ndarray):
-            output_frames.append(result)
-        else:
-            output_frames.append(np.array(result))
+    # 소스 특징 추출
+    with wrapper.inference_ctx():
+        I_s = wrapper.prepare_source(img_crop_256x256)         # (1,3,256,256)
+        x_s_info = wrapper.get_kp_info(I_s)                    # pitch/yaw/roll/kp/exp/scale/t
+        x_c_s = x_s_info["kp"]                                 # canonical keypoints
+        f_s = wrapper.extract_feature_3d(I_s)                  # appearance feature
+        x_s = wrapper.transform_keypoint(x_s_info)             # source keypoints
+
+        # 소스 눈/입 기준 비율 (landmark 기반)
+        source_lmk = crop_info.get("lmk_crop")
+
+        keyframes = EXPRESSION_KEYFRAMES.get(expression, EXPRESSION_KEYFRAMES["idle"])
+        frame_params = interpolate_keyframes(keyframes, num_frames)
+
+        output_frames = []
+        for eyes_open, smile, eyebrow, pitch_delta, yaw_delta in frame_params:
+            # 눈 retarget
+            eye_ratio = torch.tensor([[max(0.0, 1.0 - float(eyes_open))]], dtype=torch.float32).to(wrapper.device)
+            delta_eye = wrapper.retarget_eye(x_c_s, eye_ratio)   # (1,63,2)
+
+            # 입 retarget (smile → 입 조금 열기)
+            lip_ratio = torch.tensor([[float(smile) * 0.3]], dtype=torch.float32).to(wrapper.device)
+            delta_lip = wrapper.retarget_lip(x_c_s, lip_ratio)   # (1,63,2)
+
+            # driving keypoint = source + 눈/입 delta
+            x_d_i = x_s + delta_eye + delta_lip
+
+            # pitch/yaw 회전 변화 반영
+            import math
+            pitch_rad = math.radians(float(pitch_delta))
+            yaw_rad   = math.radians(float(yaw_delta))
+            # x_s_info의 pitch/yaw에 delta 추가해서 새 R 계산
+            from src.utils.helper import calc_motion_multiplier
+            # 간단히 kp에 소량 offset 적용
+            if abs(pitch_rad) > 0.001 or abs(yaw_rad) > 0.001:
+                offset = torch.zeros_like(x_d_i)
+                offset[..., 1] += pitch_rad * 0.1  # y축 (pitch)
+                offset[..., 0] += yaw_rad * 0.1    # x축 (yaw)
+                x_d_i = x_d_i + offset
+
+            # stitching
+            x_d_i = wrapper.stitching(x_s, x_d_i)
+
+            # warp & decode
+            out = wrapper.warp_decode(f_s, x_s, x_d_i)
+            frame = wrapper.parse_output(out["out"])   # (H,W,3) uint8
+            output_frames.append(frame)
 
     # 루프를 위해 역방향 프레임 추가 (forward + backward = seamless loop)
     loop_frames = output_frames + output_frames[::-1]
