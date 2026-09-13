@@ -25,7 +25,7 @@ jobs:
       - name: Set short SHA
         run: echo "SHORT_SHA=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
 
-      - name: Build and push
+      - name: Build and push (Juggernaut - 이미지 생성)
         uses: docker/build-push-action@v4
         with:
           context: .
@@ -33,3 +33,33 @@ jobs:
           tags: |
             freeleo3030/city-of-lust-runpod:latest
             freeleo3030/city-of-lust-runpod:${{ env.SHORT_SHA }}
+
+  build-liveportrait:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -af
+          df -h
+
+      - uses: actions/checkout@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+
+      - name: Set short SHA
+        run: echo "SHORT_SHA=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+
+      - name: Build and push (LivePortrait - 표정 영상 생성)
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: ./Dockerfile.liveportrait
+          push: true
+          tags: |
+            freeleo3030/city-of-lust-liveportrait:latest
+            freeleo3030/city-of-lust-liveportrait:${{ env.SHORT_SHA }}
