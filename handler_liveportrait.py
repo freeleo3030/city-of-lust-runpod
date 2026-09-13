@@ -217,6 +217,15 @@ def handler(job):
         inp = job["input"]
         mode = inp.get("mode", "liveportrait")
 
+        if mode == "list_dir":
+            # 디버그: 볼륨 디렉토리 구조 출력
+            import glob
+            files = []
+            for root, dirs, fnames in os.walk(WEIGHTS_DIR):
+                for f in fnames:
+                    files.append(os.path.join(root, f).replace(WEIGHTS_DIR, ""))
+            return {"files": sorted(files)[:100], "weights_dir": WEIGHTS_DIR, "status": "success"}
+
         if mode != "liveportrait":
             return {"error": "This endpoint only supports mode=liveportrait", "status": "failed"}
 
