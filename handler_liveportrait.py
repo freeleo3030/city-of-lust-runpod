@@ -92,11 +92,19 @@ def download_weights():
         ignore_patterns=["*.md", "*.txt", "examples/*"],
     )
 
-    # 링크 설정 (LivePortrait가 /app/pretrained_weights/ 를 기대함)
+    # LivePortrait가 /app/pretrained_weights/ 구조를 기대함
+    # 볼륨의 liveportrait/ 폴더를 /app/pretrained_weights/liveportrait 로 링크
     pretrained_dir = os.path.join(APP_DIR, "pretrained_weights")
-    pw_src = os.path.join(WEIGHTS_DIR, "pretrained_weights")
-    if not os.path.exists(pretrained_dir) and os.path.exists(pw_src):
-        os.symlink(pw_src, pretrained_dir)
+    if not os.path.exists(pretrained_dir):
+        os.makedirs(pretrained_dir, exist_ok=True)
+    lp_link = os.path.join(pretrained_dir, "liveportrait")
+    lp_src = os.path.join(WEIGHTS_DIR, "liveportrait")
+    if not os.path.exists(lp_link) and os.path.exists(lp_src):
+        os.symlink(lp_src, lp_link)
+    insightface_link = os.path.join(pretrained_dir, "insightface")
+    insightface_src = os.path.join(WEIGHTS_DIR, "insightface")
+    if not os.path.exists(insightface_link) and os.path.exists(insightface_src):
+        os.symlink(insightface_src, insightface_link)
 
     open(marker, "w").close()
     print("Weights downloaded!", flush=True)
@@ -115,14 +123,15 @@ def load_pipeline():
     from src.config.crop_config import CropConfig
     from src.live_portrait_pipeline import LivePortraitPipeline
 
-    # HuggingFace KwaiVGI/LivePortrait 레포 구조: pretrained_weights/ 서브폴더에 .pth 파일 존재
-    pw_dir = os.path.join(WEIGHTS_DIR, "pretrained_weights")
+    # 실제 볼륨 구조: /runpod-volume/liveportrait/liveportrait/base_models/*.pth
+    base_dir = os.path.join(WEIGHTS_DIR, "liveportrait", "base_models")
+    retarget_dir = os.path.join(WEIGHTS_DIR, "liveportrait", "retargeting_models")
     inference_cfg = InferenceConfig(
-        checkpoint_F=os.path.join(pw_dir, "appearance_feature_extractor.pth"),
-        checkpoint_M=os.path.join(pw_dir, "motion_extractor.pth"),
-        checkpoint_W=os.path.join(pw_dir, "warping_spade.pth"),
-        checkpoint_G=os.path.join(pw_dir, "spade_generator.pth"),
-        checkpoint_S=os.path.join(pw_dir, "stitching_retargeting_module.pth"),
+        checkpoint_F=os.path.join(base_dir, "appearance_feature_extractor.pth"),
+        checkpoint_M=os.path.join(base_dir, "motion_extractor.pth"),
+        checkpoint_W=os.path.join(base_dir, "warping_module.pth"),
+        checkpoint_G=os.path.join(base_dir, "spade_generator.pth"),
+        checkpoint_S=os.path.join(retarget_dir, "stitching_retargeting_module.pth"),
     )
     crop_cfg = CropConfig()
 
