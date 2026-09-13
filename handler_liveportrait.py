@@ -92,20 +92,6 @@ def download_weights():
         ignore_patterns=["*.md", "*.txt", "examples/*"],
     )
 
-    # LivePortrait가 /app/pretrained_weights/ 구조를 기대함
-    # 볼륨의 liveportrait/ 폴더를 /app/pretrained_weights/liveportrait 로 링크
-    pretrained_dir = os.path.join(APP_DIR, "pretrained_weights")
-    if not os.path.exists(pretrained_dir):
-        os.makedirs(pretrained_dir, exist_ok=True)
-    lp_link = os.path.join(pretrained_dir, "liveportrait")
-    lp_src = os.path.join(WEIGHTS_DIR, "liveportrait")
-    if not os.path.exists(lp_link) and os.path.exists(lp_src):
-        os.symlink(lp_src, lp_link)
-    insightface_link = os.path.join(pretrained_dir, "insightface")
-    insightface_src = os.path.join(WEIGHTS_DIR, "insightface")
-    if not os.path.exists(insightface_link) and os.path.exists(insightface_src):
-        os.symlink(insightface_src, insightface_link)
-
     open(marker, "w").close()
     print("Weights downloaded!", flush=True)
 
@@ -116,6 +102,16 @@ def load_pipeline():
         return
 
     download_weights()
+
+    # symlink: /app/pretrained_weights/ 구조 항상 보장 (download 스킵돼도 실행)
+    pretrained_dir = os.path.join(APP_DIR, "pretrained_weights")
+    os.makedirs(pretrained_dir, exist_ok=True)
+    for folder in ["liveportrait", "insightface"]:
+        link = os.path.join(pretrained_dir, folder)
+        src = os.path.join(WEIGHTS_DIR, folder)
+        if os.path.exists(src) and not os.path.exists(link):
+            os.symlink(src, link)
+            print(f"Symlinked {src} -> {link}", flush=True)
 
     sys.path.insert(0, APP_DIR)
 
