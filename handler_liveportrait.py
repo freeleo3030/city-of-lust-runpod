@@ -92,10 +92,11 @@ def download_weights():
         ignore_patterns=["*.md", "*.txt", "examples/*"],
     )
 
-    # 링크 설정 (LivePortrait가 기대하는 경로)
+    # 링크 설정 (LivePortrait가 /app/pretrained_weights/ 를 기대함)
     pretrained_dir = os.path.join(APP_DIR, "pretrained_weights")
-    if not os.path.exists(pretrained_dir):
-        os.symlink(WEIGHTS_DIR, pretrained_dir)
+    pw_src = os.path.join(WEIGHTS_DIR, "pretrained_weights")
+    if not os.path.exists(pretrained_dir) and os.path.exists(pw_src):
+        os.symlink(pw_src, pretrained_dir)
 
     open(marker, "w").close()
     print("Weights downloaded!", flush=True)
@@ -114,12 +115,14 @@ def load_pipeline():
     from src.config.crop_config import CropConfig
     from src.live_portrait_pipeline import LivePortraitPipeline
 
+    # HuggingFace KwaiVGI/LivePortrait 레포 구조: pretrained_weights/ 서브폴더에 .pth 파일 존재
+    pw_dir = os.path.join(WEIGHTS_DIR, "pretrained_weights")
     inference_cfg = InferenceConfig(
-        checkpoint_F=os.path.join(WEIGHTS_DIR, "appearance_feature_extractor.pth"),
-        checkpoint_M=os.path.join(WEIGHTS_DIR, "motion_extractor.pth"),
-        checkpoint_W=os.path.join(WEIGHTS_DIR, "warping_spade.pth"),
-        checkpoint_G=os.path.join(WEIGHTS_DIR, "spade_generator.pth"),
-        checkpoint_S=os.path.join(WEIGHTS_DIR, "stitching_retargeting_module.pth"),
+        checkpoint_F=os.path.join(pw_dir, "appearance_feature_extractor.pth"),
+        checkpoint_M=os.path.join(pw_dir, "motion_extractor.pth"),
+        checkpoint_W=os.path.join(pw_dir, "warping_spade.pth"),
+        checkpoint_G=os.path.join(pw_dir, "spade_generator.pth"),
+        checkpoint_S=os.path.join(pw_dir, "stitching_retargeting_module.pth"),
     )
     crop_cfg = CropConfig()
 
