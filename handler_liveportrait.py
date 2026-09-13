@@ -11,66 +11,103 @@ print("LivePortrait handler starting...", flush=True)
 WEIGHTS_DIR = "/runpod-volume/liveportrait"
 APP_DIR = "/app"
 
-# 표정별 애니메이션 파라미터 정의
-# eyes_open: 1.0=정상, 0.0=완전히 감김
-# smile: 0.0~1.0
-# eyebrow_raise: -1.0~1.0
-# head_pitch: 도(°), 양수=아래, 음수=위
-# head_yaw: 도(°), 양수=오른쪽, 음수=왼쪽
-EXPRESSION_KEYFRAMES = {
-    "idle": [
-        # (frame_ratio, eyes_open, smile, eyebrow_raise, head_pitch, head_yaw)
-        (0.0,  1.0,  0.05, 0.0,   0.0,  0.0),
-        (0.15, 0.9,  0.05, 0.0,   0.5,  0.5),
-        (0.3,  0.05, 0.05, 0.0,   1.0,  1.0),   # blink
-        (0.4,  1.0,  0.05, 0.0,   0.5,  0.5),
-        (0.6,  1.0,  0.05, 0.0,  -0.5, -0.5),
-        (0.75, 0.9,  0.05, 0.0,   0.0,  0.0),
-        (0.85, 0.05, 0.05, 0.0,   0.0,  0.0),   # blink
-        (1.0,  1.0,  0.05, 0.0,   0.0,  0.0),
-    ],
-    "smile": [
-        (0.0,  1.0,  0.0,  0.0,  0.0,  0.0),
-        (0.2,  1.0,  0.4,  0.1,  0.0, -1.0),
-        (0.4,  0.9,  0.7,  0.2, -1.0, -2.0),
-        (0.6,  1.0,  0.9,  0.2, -1.0, -1.0),
-        (0.8,  0.05, 0.8,  0.1,  0.0,  0.0),    # blink while smiling
-        (1.0,  1.0,  0.7,  0.1,  0.0,  0.0),
-    ],
-    "shy": [
-        (0.0,  1.0,  0.0,  0.0,   0.0,  0.0),
-        (0.2,  0.8,  0.2, -0.1,   5.0, -3.0),
-        (0.4,  0.7,  0.4, -0.2,  10.0, -5.0),   # 고개 숙임
-        (0.6,  0.05, 0.3, -0.1,   8.0, -4.0),   # blink + 아래 봄
-        (0.8,  0.6,  0.3, -0.1,   8.0, -3.0),
-        (1.0,  0.8,  0.2,  0.0,   5.0, -2.0),
-    ],
-    "surprised": [
-        (0.0,  1.0,  0.0,  0.0,  0.0,  0.0),
-        (0.1,  1.3,  0.0,  0.5, -3.0,  0.0),   # 눈 크게 + 눈썹 올림
-        (0.3,  1.4,  0.0,  0.6, -4.0,  2.0),
-        (0.5,  1.3,  0.1,  0.5, -3.0,  1.0),
-        (0.7,  1.2,  0.1,  0.3, -2.0,  0.0),
-        (0.9,  0.05, 0.1,  0.2, -1.0,  0.0),   # blink
-        (1.0,  1.1,  0.0,  0.1,  0.0,  0.0),
-    ],
-    "annoyed": [
-        (0.0,  1.0,  0.0,  0.0,  0.0,  0.0),
-        (0.2,  0.8, -0.1, -0.3,  2.0,  3.0),   # 눈썹 찡그림
-        (0.4,  0.7, -0.2, -0.4,  3.0,  5.0),
-        (0.6,  0.05,-0.1, -0.3,  2.0,  3.0),   # blink
-        (0.8,  0.8, -0.1, -0.3,  2.0,  2.0),
-        (1.0,  0.9,  0.0, -0.1,  1.0,  1.0),
-    ],
-    "disappointed": [
-        (0.0,  1.0,  0.0,  0.0,  0.0,  0.0),
-        (0.2,  0.9, -0.1, -0.2,  3.0, -2.0),
-        (0.4,  0.8, -0.2, -0.3,  6.0, -4.0),   # 고개 아래
-        (0.6,  0.05,-0.2, -0.2,  5.0, -3.0),   # blink
-        (0.8,  0.7, -0.2, -0.2,  5.0, -2.0),
-        (1.0,  0.8, -0.1, -0.1,  3.0, -1.0),
-    ],
+# 표정별 기본 파라미터 (절차적 생성의 베이스값)
+EXPRESSION_BASE = {
+    #               smile  eyebrow  base_pitch  base_yaw  smile_var
+    "idle":        (0.05,  0.0,     0.0,        0.0,      0.08),
+    "smile":       (0.75,  0.15,   -1.5,       -2.0,      0.18),
+    "shy":         (0.30, -0.15,    8.0,       -4.5,      0.12),
+    "surprised":   (0.05,  0.50,   -3.5,        1.0,      0.08),
+    "annoyed":     (-0.18,-0.40,    2.5,        4.5,      0.08),
+    "disappointed":(-0.18,-0.30,    5.5,       -3.0,      0.08),
 }
+
+EXPRESSION_NAMES = set(EXPRESSION_BASE.keys())
+
+
+def _smooth_interp(kps, t):
+    """(t, v) 키포인트 리스트를 선형 보간"""
+    for i in range(len(kps) - 1):
+        t0, v0 = kps[i]
+        t1, v1 = kps[i + 1]
+        if t0 <= t <= t1:
+            a = (t - t0) / (t1 - t0 + 1e-8)
+            return v0 * (1 - a) + v1 * a
+    return kps[-1][1]
+
+
+def generate_frame_params(expression, num_frames, fps=15):
+    """절차적으로 자연스러운 프레임 파라미터 생성
+    반환: list of (eyes_open, smile, eyebrow, pitch, yaw, gaze_x)
+    """
+    import math
+
+    rng = np.random.default_rng()  # 매 호출마다 다른 랜덤
+    duration = num_frames / fps
+    dt = 1.0 / fps
+
+    base = EXPRESSION_BASE.get(expression, EXPRESSION_BASE["idle"])
+    base_smile, base_eyebrow, base_pitch, base_yaw, smile_var = base
+
+    # ── 눈 깜빡임 스케줄 (2~5초 랜덤 간격, 20% 확률로 더블 블링크) ──
+    blink_times = []
+    t = rng.uniform(0.4, 1.8)
+    while t < duration - 0.15:
+        blink_times.append(t)
+        if rng.random() < 0.22:           # double blink
+            blink_times.append(t + 0.16)
+        t += rng.uniform(2.0, 5.0)
+    blink_dur = 0.13  # 초
+
+    # ── 고개 움직임 웨이포인트 ──
+    yaw_kps   = [(0.0, base_yaw)]
+    pitch_kps = [(0.0, base_pitch)]
+
+    t = rng.uniform(0.6, 1.4)
+    while t < duration:
+        yaw_kps.append((t,   base_yaw   + rng.uniform(-5.5, 5.5)))
+        pitch_kps.append((t, base_pitch + rng.uniform(-3.5, 3.5)))
+        t += rng.uniform(0.9, 2.2)
+    yaw_kps.append((duration, base_yaw))
+    pitch_kps.append((duration, base_pitch))
+
+    # ── 시선 이동 (gaze_x: -0.02~0.02 수평 오프셋) ──
+    gaze_kps = [(0.0, 0.0)]
+    t = rng.uniform(1.0, 2.5)
+    while t < duration:
+        gaze_kps.append((t, rng.uniform(-0.018, 0.018)))
+        t += rng.uniform(1.5, 3.5)
+    gaze_kps.append((duration, 0.0))
+
+    # ── 미소 변화 (기본값 주변을 ±smile_var 로 부드럽게 변동) ──
+    smile_kps = [(0.0, base_smile)]
+    t = rng.uniform(0.5, 1.5)
+    while t < duration:
+        smile_kps.append((t, np.clip(base_smile + rng.uniform(-smile_var, smile_var), -0.3, 1.0)))
+        t += rng.uniform(0.7, 1.8)
+    smile_kps.append((duration, base_smile))
+
+    # ── 프레임별 파라미터 생성 ──
+    result = []
+    for i in range(num_frames):
+        t = i * dt
+
+        # 눈 열림 값 (블링크 중이면 sin 곡선으로 닫힘)
+        eyes_open = 1.0
+        for bt in blink_times:
+            if bt <= t <= bt + blink_dur:
+                progress = (t - bt) / blink_dur
+                eyes_open = max(0.03, abs(math.sin(progress * math.pi)))
+                break
+
+        yaw    = _smooth_interp(yaw_kps, t)
+        pitch  = _smooth_interp(pitch_kps, t)
+        smile  = _smooth_interp(smile_kps, t)
+        gaze_x = _smooth_interp(gaze_kps, t)
+
+        result.append((eyes_open, float(smile), float(base_eyebrow),
+                       float(pitch), float(yaw), float(gaze_x)))
+    return result
 
 loaded_pipeline = None
 
@@ -140,33 +177,13 @@ def load_pipeline():
     print("LivePortrait wrapper loaded!", flush=True)
 
 
-def interpolate_keyframes(keyframes, num_frames):
-    """keyframe 리스트를 num_frames 개수의 프레임으로 보간"""
-    result = []
-    kf = np.array(keyframes)  # shape: (N, 6)  [ratio, eyes, smile, eyebrow, pitch, yaw]
-
-    for i in range(num_frames):
-        t = i / (num_frames - 1)
-        # t에 해당하는 구간 찾기
-        for j in range(len(kf) - 1):
-            t0, t1 = kf[j, 0], kf[j + 1, 0]
-            if t0 <= t <= t1:
-                alpha = (t - t0) / (t1 - t0 + 1e-8)
-                vals = kf[j, 1:] * (1 - alpha) + kf[j + 1, 1:] * alpha
-                result.append(vals)
-                break
-        else:
-            result.append(kf[-1, 1:])
-
-    return result  # list of [eyes_open, smile, eyebrow, pitch, yaw]
-
-
 def generate_animation(source_image_b64, expression, num_frames=30, fps=15):
     """소스 이미지 + 표정 → mp4 base64"""
     from PIL import Image
     from io import BytesIO
     import imageio
     import torch
+    import math
 
     # 소스 이미지 디코딩
     if "," in source_image_b64:
@@ -184,42 +201,40 @@ def generate_animation(source_image_b64, expression, num_frames=30, fps=15):
     crop_info = cropper.crop_source_image(img_rgb, crop_cfg)
     img_crop_256x256 = crop_info["img_crop_256x256"]  # (256,256,3) uint8
 
-    # 소스 특징 추출
+    # 절차적 프레임 파라미터 생성
+    frame_params = generate_frame_params(expression, num_frames, fps)
+
+    # 소스 특징 추출 및 프레임 생성
     with wrapper.inference_ctx():
-        I_s = wrapper.prepare_source(img_crop_256x256)         # (1,3,256,256)
-        x_s_info = wrapper.get_kp_info(I_s)                    # pitch/yaw/roll/kp/exp/scale/t
-        x_c_s = x_s_info["kp"]                                 # canonical keypoints
-        f_s = wrapper.extract_feature_3d(I_s)                  # appearance feature
-        x_s = wrapper.transform_keypoint(x_s_info)             # source keypoints
+        I_s = wrapper.prepare_source(img_crop_256x256)
+        x_s_info = wrapper.get_kp_info(I_s)
+        f_s = wrapper.extract_feature_3d(I_s)
+        x_s = wrapper.transform_keypoint(x_s_info)
 
-        # 소스 눈/입 기준 비율 (landmark 기반)
-        source_lmk = crop_info.get("lmk_crop")
-
-        keyframes = EXPRESSION_KEYFRAMES.get(expression, EXPRESSION_KEYFRAMES["idle"])
-        frame_params = interpolate_keyframes(keyframes, num_frames)
-
-        import math
         output_frames = []
-        for eyes_open, smile, eyebrow, pitch_delta, yaw_delta in frame_params:
-            # keypoint에 직접 offset 적용 (단순화된 표정 제어)
+        for eyes_open, smile, eyebrow, pitch_delta, yaw_delta, gaze_x in frame_params:
             x_d_i = x_s.clone()
 
-            # pitch/yaw offset (고개 움직임)
-            if abs(pitch_delta) > 0.01 or abs(yaw_delta) > 0.01:
-                offset = torch.zeros_like(x_d_i)
-                offset[..., 1] += math.radians(float(pitch_delta)) * 0.08
-                offset[..., 0] += math.radians(float(yaw_delta)) * 0.08
-                x_d_i = x_d_i + offset
+            # 고개 회전 (pitch/yaw)
+            offset = torch.zeros_like(x_d_i)
+            offset[..., 0] += math.radians(yaw_delta) * 0.08
+            offset[..., 1] += math.radians(pitch_delta) * 0.08
+            x_d_i = x_d_i + offset
 
-            # 눈 감기: 눈 관련 keypoints y축 조정 (21개 중 눈 영역 추정 2~8번)
-            eye_close = max(0.0, 1.0 - float(eyes_open))
+            # 시선 이동 (눈 관련 kp만 x축 이동)
+            if abs(gaze_x) > 0.001:
+                x_d_i[:, 2:8, 0] += gaze_x
+
+            # 눈 깜빡임 (눈 kp y축 조정)
+            eye_close = max(0.0, 1.0 - eyes_open)
             if eye_close > 0.05:
-                x_d_i[:, 2:8, 1] += eye_close * 0.02
+                x_d_i[:, 2:8, 1] += eye_close * 0.022
 
-            # stitching
+            # 미소 (입 아래쪽 kp y축 조정: 11~15번 추정)
+            if abs(smile) > 0.02:
+                x_d_i[:, 11:16, 1] -= smile * 0.012   # 음수=아래로 당김=미소
+
             x_d_i = wrapper.stitching(x_s, x_d_i)
-
-            # warp & decode
             out = wrapper.warp_decode(f_s, x_s, x_d_i)
             frame = wrapper.parse_output(out["out"])[0]  # (1,H,W,3) -> (H,W,3)
             output_frames.append(frame)
@@ -267,7 +282,7 @@ def handler(job):
             return {"error": "source_image (base64) required", "status": "failed"}
 
         expression = inp.get("expression", "idle")
-        if expression not in EXPRESSION_KEYFRAMES:
+        if expression not in EXPRESSION_NAMES:
             expression = "idle"
 
         num_frames = int(inp.get("num_frames", 30))   # 30프레임 @ 15fps = 2초 루프
